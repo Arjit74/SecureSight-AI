@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>EnkiScanAI - Security Analysis</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/app.css') }}" />
+  </head>
+  <body>
+    <div class="wrap">
+      <header>
+        <div class="brand">
+          <div class="logo"></div>
+          <div>
+            <h1>EnkiScanAI</h1>
+            <div class="sub">AI-Powered Security Analysis Dashboard</div>
+          </div>
+        </div>
+        <div class="controls">
+          <div class="pill" id="status"><span class="dot"></span>Live sync</div>
+          <div class="pill" id="clock">Live · 00:00:00</div>
+          <div class="reload-control">
+            <label for="reloadInput">Reload</label>
+            <input id="reloadInput" type="number" min="1" max="60" step="1" value="2" />
+            <span>s</span>
+            <button class="btn" id="applyReloadBtn" title="Apply reload interval">Set</button>
+          </div>
+          <button class="btn" id="themeToggle" title="Toggle theme">🌙 Dark</button>
+          <button class="btn" id="refreshBtn" title="Refresh data">🔄</button>
+          <button class="btn" id="toggleBtn">Pause live</button>
+        </div>
+      </header>
+
+      <!-- Statistics Dashboard -->
+      <div class="hero">
+        <div class="stat">
+          <div class="stat-label">Total Files Analyzed</div>
+          <div class="stat-value" id="stat-total">{{ items|length }}</div>
+          <div class="stat-meta">All time</div>
+        </div>
+        <div class="stat">
+          <div class="stat-label">Safe Files</div>
+          <div class="stat-value" style="color: #2e7d32;" id="stat-safe">0</div>
+          <div class="stat-meta">Low risk detected</div>
+        </div>
+        <div class="stat">
+          <div class="stat-label">Threats Detected</div>
+          <div class="stat-value" style="color: #c62828;" id="stat-threats">0</div>
+          <div class="stat-meta">High/Medium risk</div>
+        </div>
+        <div class="stat">
+          <div class="stat-label">Currently Analyzing</div>
+          <div class="stat-value" style="color: var(--accent-2);" id="stat-analyzing">0</div>
+          <div class="stat-meta">In progress</div>
+        </div>
+      </div>
+
+      <div class="layout section active" id="tab-feed">
+        <section class="panel">
+          <h2>Analysis Feed</h2>
+          
+          <!-- Search and Filter Section -->
+          <div style="margin-bottom: 16px; display: grid; gap: 10px;">
+            <div style="position: relative;">
+              <input type="text" id="searchInput" placeholder="🔍 Search files, usernames, or hashes..." style="width: 100%; padding: 10px; border: 1px solid var(--border); border-radius: 10px; font-family: inherit; font-size: 14px;">
+              <div id="suggestions" class="suggestions" aria-live="polite"></div>
+            </div>
+            <div style="display: flex; gap: 8px; flex-wrap: wrap; align-items: center;">
+              <button class="filter-btn active" data-filter="all">All</button>
+              <button class="filter-btn" data-filter="safe">✅ Safe</button>
+              <button class="filter-btn" data-filter="threat">⛔ Threats</button>
+              <button class="filter-btn" data-filter="analyzing">⏳ Analyzing</button>
+              <button class="filter-btn" data-filter="recent">🕒 Recent (24h)</button>
+              <button class="btn" id="exportVisibleBtn" style="margin-left: auto; font-size: 13px; padding: 8px 12px;">📤 Export visible</button>
+            </div>
+          </div>
+          
+          <div class="progress" aria-hidden="true"><span id="bar"></span></div>
+
+          {% if items %}
+            <div class="grid" style="margin-top: 16px;">
+              {% for item in items %}
+                <div class="item" data-id="{{ item.id }}" data-timestamp="{{ item.timestamp }}" data-username="{{ item.username or "unknown" }}" data-text="{{ item.text or "" }}" data-urls='{{ item.urls|tojson }}' data-file-name="{{ item.file_name or "" }}" data-file-link="{{ item.saved_file and ('/uploads/' ~ item.saved_file) or '' }}" data-vt-status="{{ item.vt_status or "" }}" data-vt-stats='{{ item.vt_stats|tojson }}' data-md5="{{ item.md5 or "" }}" data-sha1="{{ item.sha1 or "" }}" data-sha256="{{ item.sha256 or "" }}" data-vhash="{{ item.vhash or "" }}" data-ssdeep="{{ item.ssdeep or "" }}" data-tlsh="{{ item.tlsh or "" }}" data-file-size="{{ item.file_size or "" }}" data-mime-type="{{ item.mime_type or "" }}" data-category="{{ item.category or "" }}" data-vt-magic="{{ item.vt_magic or "" }}" data-vt-type="{{ item.vt_type or "" }}" data-vt-type-tag="{{ item.vt_type_tag or "" }}" data-vt-trid='{{ item.vt_trid|tojson }}' data-vt-magika="{{ item.vt_magika or "" }}">
+                  <div class="meta">
+                    <span class="tag">{{ item.timestamp }}</span>
+                    <span class="tag">@{{ item.username or "unknown" }}</span>
+                    {% if item.file_name %}<span class="tag">File</span>{% endif %}
+                    {% if item.urls %}<span class="tag">URL</span>{% endif %}
+                  </div>
+                  {% if item.text %}<div class="text">{{ item.text }}</div>{% endif %}
+                  {% if item.urls %}
+                    <div class="urls"><strong>URLs</strong>
+                      <ul>
+                      {% for u in item.urls %}
+                        <li><a href="{{ u }}" target="_blank">{{ u }}</a></li>
+                      {% endfor %}
+                      </ul>
+                    </div>
+                  {% endif %}
+                  {% if item.file_name %}
+                    <div class="file"><strong>File</strong>: <a href="/uploads/{{ item.saved_file }}">{{ item.file_name }}</a></div>
+                  {% endif %}
+                  {% if item.vt_status %}
+                    <div class="vt">
+                      <div><strong>Security Analysis</strong>
+                        {% if item.vt_status == 'queued' or item.vt_status == 'in_progress' %}
+                          <div class="vt-loading">
+                            <div class="vt-spinner"></div>
+                            <span>{{ 'Queued' if item.vt_status == 'queued' else 'Analyzing' }}...</span>
+                          </div>
+                        {% else %}
+                          <span class="vt-status-badge {{ item.vt_status }}">{{ item.vt_status|replace('_', ' ')|upper }}</span>
+                        {% endif %}
+                      </div>
+                      {% if item.vt_stats %}
+                        <div class="vt-grid">
+                          <div class="vt-card">Safe<br><strong>{{ item.vt_stats.harmless }}</strong></div>
+                          <div class="vt-card">Threat<br><strong>{{ item.vt_stats.malicious }}</strong></div>
+                          <div class="vt-card">Risky<br><strong>{{ item.vt_stats.suspicious }}</strong></div>
+                        </div>
+                      {% endif %}
+                    </div>
+                  {% endif %}
+                </div>
+              {% endfor %}
+            </div>
+          {% else %}
+            <div class="empty" style="margin-top: 16px;">No items received yet. Send a URL or a file to your bot.</div>
+          {% endif %}
+        </section>
+      </div>
+
+      <div class="upload-section" id="uploadSection">
+        <div class="upload-container">
+          <div class="upload-title">Upload File for Analysis</div>
+          <div class="dropzone" id="dropzone">
+            <div class="dropzone-icon">📤</div>
+            <div class="dropzone-text">Drop your file here to analyze</div>
+            <div class="dropzone-subtext">or click to browse</div>
+            <input type="file" id="fileInput" style="display: none;" />
+          </div>
+          <div class="upload-progress" id="uploadProgress" style="display: none;">
+            <div class="progress-bar">
+              <div class="progress-fill" id="progressFill"></div>
+            </div>
+            <div class="progress-text" id="progressText">Uploading and analyzing...</div>
+          </div>
+          <div class="upload-status" id="uploadStatus"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="modal" id="modal">
+      <div class="modal-card">
+        <div class="modal-head">
+          <div>
+            <div id="modalTitle"></div>
+            <div class="sub" id="modalMeta"></div>
+          </div>
+          <div style="display: flex; gap: 8px;">
+            <select id="exportFormat" class="export-select" aria-label="Export format">
+              <option value="json" selected>JSON</option>
+              <option value="csv">CSV</option>
+              <option value="txt">TXT</option>
+            </select>
+            <button class="btn" id="exportBtn" style="font-size: 13px; padding: 6px 12px;">📥 Export</button>
+            <button class="close" id="closeModal">✕</button>
+          </div>
+        </div>
+        <div id="modalBody" class="modal-body"></div>
+      </div>
+    </div>
+
+    <!-- Notification Toast -->
+    <div id="toast" style="position: fixed; bottom: 20px; right: 20px; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 14px 18px; box-shadow: 0 12px 30px var(--shadow); display: none; z-index: 1000; max-width: 300px; animation: slideUp 0.4s ease;">
+      <div id="toastMessage" style="font-size: 14px; color: var(--ink);"></div>
+    </div>
+
+    <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+    <script>
+      // Auto-reload when analysis completes (7 second check interval)
+      let autoReloadInterval = null;
+      let reloadScheduled = false;
+      
+      function checkAnalysisProgress() {
+        if (window.livePaused) return;
+        if (reloadScheduled) return; // Prevent multiple reload triggers
+        
+        fetch('/data').then(r => r.json()).then(items => {
+          const inProgress = items.filter(item => 
+            item.file_name && (item.vt_status === 'queued' || item.vt_status === 'in_progress')
+          );
+          
+          // If no analyzing files and at least one completed, schedule reload
+          if (inProgress.length === 0 && items.some(item => item.vt_status === 'completed')) {
+            reloadScheduled = true;
+            clearInterval(autoReloadInterval);
+            location.reload();
+          }
+        }).catch(err => console.log('Analysis check error:', err));
+      }
+      
+      // Start auto-reload check every 7 seconds
+      autoReloadInterval = setInterval(checkAnalysisProgress, 7000);
+    </script>
+  </body>
+</html>
