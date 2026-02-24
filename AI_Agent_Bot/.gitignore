@@ -1,0 +1,15 @@
+# Environment files
+.env
+.env/
+
+# Uploads (user files)
+uploads/
+uploads/*
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Virtual environment (if any)
+venv/
+.env/
