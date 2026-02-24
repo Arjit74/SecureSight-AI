@@ -1,126 +1,48 @@
+// server.js - UPDATED WITH AI ENDPOINTS
 const path = require('path');
 require('dotenv').config({ path: path.resolve(__dirname, '.env') });
 const express = require('express');
 const cors = require('cors');
-const fetch = require('node-fetch');
-const rulesManager = require('./lib/rulesManager');
-const jwt = require('jsonwebtoken');
-const { Pool } = require('pg');
 const crypto = require('crypto');
+const { Pool } = require('pg');
+
+// Import ML and feature extraction modules
+const URLFeatureExtractor = require('./lib/featureExtractor');
+const MLService = require('./node-ml-bridge/ml_service');
 const heuristicsManager = require('./lib/heuristicsManager');
-// ========== NEW PERFORMANCE FEATURES ==========
-const urlCache = require('./lib/urlCache');
-const { applyHeuristicDecay } = require('./lib/heuristicDecay');
-const { learnFromVirusTotal, learnFromFalsePositive, getLearningStats } = require('./lib/heuristicLearner');
-const { extractSignals, getSignalSummary } = require('./lib/signalExtractor');
-const dbLocal = require('./lib/db');
 
 const app = express();
-const PORT = process.env.PORT || 3001;
-
-// Trust only the first proxy hop (Render's reverse proxy)
-// This safely gets the real client IP while preventing IP spoofing
-app.set('trust proxy', 1);
-
-// ========== SCAN RESULTS CACHE ==========
-const scanResults = new Map(); // Store scan results by scanId
-const scanStartTimes = new Map(); // Track when scans started
-const performanceMetrics = new Map(); // Track performance metrics by scanId
-
-// ========== PERFORMANCE TRACKING ==========
-function trackPerformance(scanId, metric, value) {
-  if (!performanceMetrics.has(scanId)) {
-    performanceMetrics.set(scanId, {});
-  }
-  const metrics = performanceMetrics.get(scanId);
-  metrics[metric] = value;
-}
+const PORT = process.env.PORT || 3000;
 
 // ========== DATABASE SETUP ==========
 const pool = new Pool({
-  connectionString: process.env.DATABASE_URL || 'postgresql://localhost:5432/guardianlink'
+  connectionString: process.env.DATABASE_URL || 'postgresql://localhost:5432/securesight'
 });
-
-// Helper function to convert SQLite ? placeholders to PostgreSQL $1, $2, etc
-function convertSqlPlaceholders(sql) {
-  let paramIndex = 1;
-  return sql.replace(/\?/g, () => `$${paramIndex++}`);
-}
-
-// Wrapper for compatibility with callback-based queries
-const db = {
-  run: (sql, params = [], callback) => {
-    if (typeof params === 'function') {
-      callback = params;
-      params = [];
-    }
-    const pgSql = convertSqlPlaceholders(sql);
-    pool.query(pgSql, params, (err, result) => {
-      callback(err, result);
-    });
-  },
-  get: (sql, params = [], callback) => {
-    if (typeof params === 'function') {
-      callback = params;
-      params = [];
-    }
-    const pgSql = convertSqlPlaceholders(sql);
-    pool.query(pgSql, params, (err, result) => {
-      callback(err, result?.rows?.[0]);
-    });
-  },
-  all: (sql, params = [], callback) => {
-    if (typeof params === 'function') {
-      callback = params;
-      params = [];
-    }
-    const pgSql = convertSqlPlaceholders(sql);
-    pool.query(pgSql, params, (err, result) => {
-      callback(err, result?.rows);
-    });
-  },
-  serialize: (callback) => {
-    callback();
-  }
-};
 
 // Initialize database tables
 const initDatabase = async () => {
   try {
-    // Create tables with PostgreSQL syntax
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS users (
-        id TEXT PRIMARY KEY,
-        email TEXT UNIQUE NOT NULL,
-        username TEXT UNIQUE NOT NULL,
-        password_hash TEXT NOT NULL,
-        extension_token TEXT UNIQUE,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        last_login TIMESTAMP
-      )
-    `);
-
     await pool.query(`
       CREATE TABLE IF NOT EXISTS scans (
         id TEXT PRIMARY KEY,
-        user_id TEXT,
         url TEXT NOT NULL,
-        scan_result TEXT,
-        status TEXT DEFAULT 'pending',
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY(user_id) REFERENCES users(id)
+        verdict TEXT NOT NULL,
+        confidence DECIMAL(4,3),
+        features JSONB,
+        model_used TEXT,
+        analysis_time_ms INTEGER,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )
     `);
-
+    
     await pool.query(`
-      CREATE TABLE IF NOT EXISTS extension_sessions (
-        id TEXT PRIMARY KEY,
-        user_id TEXT,
-        extension_token TEXT UNIQUE,
-        device_info TEXT,
-        last_activity TIMESTAMP,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY(user_id) REFERENCES users(id)
+      CREATE TABLE IF NOT EXISTS model_performance (
+        id SERIAL PRIMARY KEY,
+        model_type TEXT NOT NULL,
+        accuracy DECIMAL(5,4),
+        false_positives INTEGER,
+        false_negatives INTEGER,
+        timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )
     `);
     
@@ -130,41 +52,21 @@ const initDatabase = async () => {
   }
 };
 
-// Initialize database on startup
 initDatabase();
 
 // ========== MIDDLEWARE ==========
-const allowedOrigins = [
-  "http://localhost:3000",
-  "https://guardianlink-backend.onrender.com",
-  "http://localhost:3001",
-  "http://localhost:5173",
-  "http://localhost:5174",
-  "http://127.0.0.1:3000",
-  "http://127.0.0.1:3001",
-  "http://127.0.0.1:5173",
-  "http://127.0.0.1:5174"
-];
-
-// CORS configuration that accepts both Chrome and Firefox extensions
 const corsOptions = {
   origin: function (origin, callback) {
-    // Allow requests from:
-    // 1. Chrome extension (chrome-extension://)
-    // 2. Firefox extension (moz-extension://)
-    // 3. Localhost (development)
     const allowedOrigins = [
       'http://localhost:3000',
-      'http://localhost:3001',
+      'http://localhost:5173',
       'http://127.0.0.1:3000',
-      'http://127.0.0.1:3001'
+      'http://127.0.0.1:5173',
+      'chrome-extension://*',
+      'moz-extension://*'
     ];
 
-    // Allow all extension URLs (Chrome and Firefox)
-    if (!origin || 
-        origin.startsWith('chrome-extension://') || 
-        origin.startsWith('moz-extension://') ||
-        allowedOrigins.includes(origin)) {
+    if (!origin || allowedOrigins.some(allowed => origin.startsWith(allowed.replace('*', '')))) {
       callback(null, true);
     } else {
       console.log('❌ CORS rejected for origin:', origin);
@@ -177,2056 +79,403 @@ const corsOptions = {
 };
 
 app.use(cors(corsOptions));
-app.use(express.json());
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
-// Load rules (whitelist / blacklist) into memory
-try {
-  rulesManager.load();
-  console.log(`Rules loaded: ${rulesManager.count()} entries`);
-} catch (err) {
-  console.error('Failed to load rules:', err);
-}
-
-// Load heuristic rules
-try {
-  heuristicsManager.load();
-  applyHeuristicDecay(); // Apply time-based decay to heuristics
-  console.log(`Heuristics loaded: ${heuristicsManager.getAll().rules.length} rules`);
-} catch (err) {
-  console.error('Failed to load heuristics:', err);
-}
-
-// Rate limiting middleware
+// Rate limiting
 const rateLimit = require('express-rate-limit');
 const limiter = rateLimit({
-  windowMs: 60 * 1000, // 1 minute
-  max: process.env.RATE_LIMIT || 100,
+  windowMs: 60 * 1000,
+  max: 100,
   message: 'Too many requests'
 });
 app.use('/api/', limiter);
 
-// Extension token verification (keep for extension)
-function verifyExtensionToken(req, res, next) {
-  const token = req.headers['x-extension-token'];
-  
-  if (!token) {
-    return res.status(401).json({ error: 'No extension token' });
-  }
-  
-  db.get('SELECT user_id FROM extension_sessions WHERE extension_token = ?', [token], (err, row) => {
-    if (err || !row) {
-      return res.status(401).json({ error: 'Invalid extension token' });
-    }
-    req.userId = row.user_id;
-    next();
-  });
-}
+// ========== SCAN RESULTS CACHE ==========
+const scanCache = new Map();
+const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
 
-// ========== AUTHENTICATION ENDPOINTS ==========
-
-// Register user
 // ========== HEALTH CHECK ==========
-
-// Health check endpoint for frontend
-app.get('/api/health', (req, res) => {
-  res.json({
-    status: 'ok',
-    timestamp: new Date().toISOString(),
-    version: '2.0',
-    components: {
+app.get('/api/health', async (req, res) => {
+  try {
+    const mlInfo = await MLService.getModelInfo();
+    
+    res.json({
+      status: 'ok',
+      timestamp: new Date().toISOString(),
+      version: '2.0.0',
+      ml: mlInfo,
       database: 'connected',
-      cache: 'enabled'
-    }
-  });
-});
-
-// ========== CACHE & STATISTICS ENDPOINTS ==========
-
-// Get cache statistics
-app.get('/api/cache/stats', (req, res) => {
-  const cacheStats = urlCache.getCacheStats();
-  const scanStats = dbLocal.getScanStats();
-  const learningStats = getLearningStats();
-  
-  res.json({
-    cache: cacheStats,
-    scans: scanStats,
-    learning: learningStats,
-    timestamp: new Date().toISOString()
-  });
-});
-
-// Clear cache (admin only)
-app.post('/api/cache/clear', (req, res) => {
-  try {
-    const beforeSize = urlCache.getCacheStats().totalCached;
-    urlCache.clearCache();
-    
-    res.json({
-      message: 'Cache cleared successfully',
-      clearedEntries: beforeSize,
-      timestamp: new Date().toISOString()
+      uptime: process.uptime()
     });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
   }
 });
 
-// Get learning statistics
-app.get('/api/learning/stats', (req, res) => {
-  const stats = getLearningStats();
-  res.json(stats);
-});
+// ========== AI SCAN ENDPOINTS ==========
 
-// ========== EXTENSION ENDPOINTS ==========
-
-// Register extension session (public endpoint)
-app.post('/api/extension/register', (req, res) => {
-  const extensionToken = crypto.randomUUID();
-  const sessionId = crypto.randomUUID();
-  const { deviceInfo } = req.body;
-  
-  // No user required - extension can register without authentication
-  db.run(
-    'INSERT INTO extension_sessions (id, user_id, extension_token, device_info, last_activity) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)',
-    [sessionId, null, extensionToken, JSON.stringify(deviceInfo)],
-    (err) => {
-      if (err) {
-        return res.status(500).json({ error: 'Failed to register extension' });
-      }
-      
-      res.json({
-        extensionToken,
-        sessionId,
-        message: 'Extension registered successfully'
-      });
-    }
-  );
-});
-
-// Verify extension is connected to user
-app.get('/api/extension/verify', verifyExtensionToken, (req, res) => {
-  db.get('SELECT email, username FROM users WHERE id = ?', [req.userId], (err, row) => {
-    if (err || !row) {
-      return res.status(401).json({ error: 'User not found' });
-    }
-    
-    res.json({
-      authenticated: true,
-      userId: req.userId,
-      email: row.email,
-      username: row.username
-    });
-  });
-});
-
-// ========== TIMEOUT & CACHE HELPERS ==========
-
-function withTimeout(promise, ms) {
-  return Promise.race([
-    promise,
-    new Promise((_, reject) => 
-      setTimeout(() => reject(new Error(`Request timeout after ${ms}ms`)), ms)
-    )
-  ]);
-}
-
-const dnsCache = new Map();
-const DNS_CACHE_TTL = 60000; // 1 minute
-
-async function getCachedIP(hostname) {
-  const cached = dnsCache.get(hostname);
-  if (cached && Date.now() - cached.time < DNS_CACHE_TTL) {
-    return cached.ip;
-  }
-  
-  const dns = require('dns').promises;
-  try {
-    const addresses = await withTimeout(dns.lookup(hostname), 2000);
-    const ip = addresses.address;
-    dnsCache.set(hostname, { ip, time: Date.now() });
-    return ip;
-  } catch (error) {
-    console.error(`DNS lookup failed for ${hostname}:`, error.message);
-    throw error;
-  }
-}
-
-// ========== SCANNING ENDPOINTS ==========
-
-// VirusTotal URL scan
-async function scanWithVirusTotal(url) {
-  const apiKey = process.env.VIRUSTOTAL_API_KEY;
-  
-  if (!apiKey) {
-    console.warn('⚠️ VirusTotal API key not configured');
-    return { 
-      error: 'API key not configured', 
-      score: 0, 
-      maxScore: 25,
-      status: 'warning',
-      available: false 
-    };
-  }
-  
-  console.log(`🔍 Submitting to VirusTotal: ${url}`);
-  
-  try {
-    // First, submit the URL for scanning with timeout
-    const submitResponse = await withTimeout(
-      fetch('https://www.virustotal.com/api/v3/urls', {
-        method: 'POST',
-        headers: {
-          'x-apikey': apiKey,
-          'Content-Type': 'application/x-www-form-urlencoded'
-        },
-        body: `url=${encodeURIComponent(url)}`
-      }),
-      10000  // Increased from 2500ms to 5000ms
-    );
-    
-    const submitData = await submitResponse.json();
-    
-    // Check for API key errors
-    if (submitData.error) {
-      const errorMsg = submitData.error.message || JSON.stringify(submitData.error);
-      if (errorMsg.includes('API key') || errorMsg.includes('Invalid') || errorMsg.includes('Unauthorized')) {
-        console.error('❌ VirusTotal API key error:', errorMsg);
-        console.error('❌ Check your VIRUSTOTAL_API_KEY in .env - it may be rate-limited or invalid');
-        return { 
-          error: 'Invalid or expired API key', 
-          score: 0, 
-          maxScore: 25,
-          status: 'warning',
-          available: false 
-        };
-      }
-      console.error('❌ VirusTotal submit error:', submitData.error);
-      console.error('❌ Response status:', submitResponse.status, submitResponse.statusText);
-      return { error: submitData.error.message, score: 0, maxScore: 25, status: 'warning' };
-    }
-    
-    // Get the analysis ID
-    const analysisId = submitData.data?.id;
-    
-    if (!analysisId) {
-      console.error('❌ No analysis ID returned from VirusTotal');
-      console.error('Response data:', JSON.stringify(submitData, null, 2));
-      return { error: 'No analysis ID returned', score: 0, maxScore: 25, status: 'warning' };
-    }
-    
-    console.log(`✅ VirusTotal analysis created: ${analysisId}`);
-    
-    let analysisData;
-    let attempts = 0;
-    const maxAttempts = 8; // Increased from 3 to 8 attempts
-    const initialWaitMs = 500; // Start with 500ms (was 300ms)
-    const maxWaitMs = 2000; // Cap at 2000ms (was 800ms)
-
-    while (attempts < maxAttempts) {
-      try {
-        console.log(`🔄 VirusTotal polling attempt ${attempts + 1}/${maxAttempts} for ${analysisId}`);
-        const res = await fetch(
-          `https://www.virustotal.com/api/v3/analyses/${analysisId}`,
-          { 
-            headers: { 'x-apikey': apiKey }, 
-            signal: AbortSignal.timeout(10000)  // Increased from 2000ms to 3000ms
-          }
-        );
-
-        if (!res.ok) {
-          console.error(`❌ VirusTotal poll failed: HTTP ${res.status}`);
-          throw new Error(`HTTP ${res.status}: ${res.statusText}`);
-        }
-
-        analysisData = await res.json();
-        const status = analysisData?.data?.attributes?.status;
-        console.log(`📊 VirusTotal analysis status: ${status}`);
-
-        if (status === 'completed') {
-          console.log(`✅ VirusTotal analysis completed`);
-          break;
-        }
-
-        // Exponential backoff: 300ms, 500ms, 800ms
-        if (attempts < maxAttempts - 1) {
-          const waitTime = Math.min(initialWaitMs + (attempts * 200), maxWaitMs);
-          await new Promise(r => setTimeout(r, waitTime));
-        }
-        attempts++;
-      } catch (error) {
-        attempts++;
-        if (attempts >= maxAttempts) {
-          throw error;
-        }
-        // Exponential backoff on error too
-        const waitTime = Math.min(initialWaitMs + (attempts * 200), maxWaitMs);
-        await new Promise(r => setTimeout(r, waitTime));
-      }
-    }
-
-    if (analysisData?.data?.attributes?.status !== 'completed') {
-      // Return partial result instead of error - graceful degradation
-      console.warn(`⚠️ VirusTotal analysis not completed after ${maxAttempts} attempts`);
-      console.warn(`   Status: ${analysisData?.data?.attributes?.status}`);
-      return {
-        error: 'VirusTotal analysis timeout',
-        score: 10,
-        maxScore: 25,
-        status: 'warning',
-        partial: true
-      };
-    }
-    
-    const attributes = analysisData.data?.attributes || {};
-    const stats = attributes.stats || {};
-    const results = attributes.results || {};
-
-    const isMaliciousByAnyAV = Object.values(results).some(
-      engine => engine.category === 'malicious'
-    );
-
-    if (isMaliciousByAnyAV) {
-      return {
-        malicious: stats.malicious || 1,
-        suspicious: stats.suspicious || 0,
-        harmless: stats.harmless || 0,
-        undetected: stats.undetected || 0,
-        total:
-          (stats.malicious || 0) +
-          (stats.suspicious || 0) +
-          (stats.harmless || 0) +
-          (stats.undetected || 0),
-        score: 0,
-        maxScore: 25,
-        status: 'danger',
-        mandate: 'malicious'
-      };
-    }
-
-    const malicious = stats.malicious || 0;
-    const suspicious = stats.suspicious || 0;
-    const harmless = stats.harmless || 0;
-    const undetected = stats.undetected || 0;
-    const total = malicious + suspicious + harmless + undetected;
-    
-    // Calculate score (higher is better)
-    let score = 25;
-    if (malicious > 0) {
-      score = Math.max(0, 25 - (malicious * 5));
-    } else if (suspicious > 0) {
-      score = Math.max(10, 25 - (suspicious * 3));
-    }
-    
-    return {
-      malicious,
-      suspicious,
-      harmless,
-      undetected,
-      total,
-      score,
-      maxScore: 25,
-      status: malicious > 0 ? 'danger' : suspicious > 0 ? 'warning' : 'safe'
-    };
-  } catch (error) {
-    console.error('❌ VirusTotal error:', error.message);
-    console.error('❌ Error type:', error.name);
-    if (error.message.includes('timeout') || error.message.includes('TimeoutError')) {
-      console.error('❌ VirusTotal API request timed out - check network connectivity');
-      console.error('   - Possible causes: Firewall blocking virustotal.com, VPN/Proxy issues, DNS resolution failure');
-    } else if (error.message.includes('DNS') || error.message.includes('ENOTFOUND')) {
-      console.error('❌ Cannot reach virustotal.com - check firewall/VPN/DNS settings');
-    } else if (error.message.includes('ECONNREFUSED') || error.message.includes('EHOSTUNREACH')) {
-      console.error('❌ Network unreachable - check your internet connection');
-    }
-    // Graceful degradation instead of total failure
-    return { 
-      error: error.message, 
-      score: 10, 
-      maxScore: 25, 
-      status: 'warning',
-      partial: true,
-      available: false 
-    };
-  }
-}
-
-// AbuseIPDB check (for domain IP)
-async function checkWithAbuseIPDB(domain) {
-  const apiKey = process.env.ABUSEIPDB_API_KEY;
-  
-  if (!apiKey) {
-    console.warn('⚠️ AbuseIPDB API key not configured');
-    return { 
-      error: 'API key not configured', 
-      score: 15, 
-      maxScore: 15,
-      status: 'warning',
-      available: false 
-    };
-  }
-  
-  try {
-    // First resolve domain to IP using cached DNS lookup
-    let ip;
-    
-    try {
-      const hostname = new URL(domain.startsWith('http') ? domain : `https://${domain}`).hostname;
-      ip = await getCachedIP(hostname);
-    } catch (dnsError) {
-      console.error('DNS lookup error:', dnsError);
-      return { error: 'Could not resolve domain', score: 15, maxScore: 15, status: 'warning' };
-    }
-    
-    const response = await fetch(`https://api.abuseipdb.com/api/v2/check?ipAddress=${ip}&maxAgeInDays=90`, {
-      headers: {
-        'Key': apiKey,
-        'Accept': 'application/json'
-      }
-    });
-    
-    const data = await response.json();
-    
-    if (data.errors) {
-      const errorMsg = data.errors[0]?.detail || JSON.stringify(data.errors);
-      if (errorMsg.includes('API key') || errorMsg.includes('Invalid') || errorMsg.includes('Unauthorized')) {
-        console.error('❌ AbuseIPDB API key error:', errorMsg);
-        return { 
-          error: 'Invalid or expired API key', 
-          score: 15, 
-          maxScore: 15,
-          status: 'warning',
-          available: false 
-        };
-      }
-      console.error('AbuseIPDB error:', data.errors);
-      // Graceful degradation: assume safe if check fails
-      return { 
-        abuseConfidenceScore: 0, 
-        totalReports: 0, 
-        score: 12, 
-        maxScore: 15, 
-        status: 'safe',
-        partial: true,
-        reason: 'IP reputation check unavailable - no reports found'
-      };
-    }
-    
-    const abuseScore = data.data?.abuseConfidenceScore || 0;
-    const totalReports = data.data?.totalReports || 0;
-    
-    // Calculate our score (higher is better, so invert abuse score)
-    let score = Math.round(15 * (1 - abuseScore / 100));
-    
-    return {
-      ip,
-      abuseConfidenceScore: abuseScore,
-      totalReports,
-      countryCode: data.data?.countryCode,
-      isp: data.data?.isp,
-      score,
-      maxScore: 15,
-      status: abuseScore > 50 ? 'danger' : abuseScore > 20 ? 'warning' : 'safe'
-    };
-  } catch (error) {
-    console.error('AbuseIPDB error:', error.message);
-    // Graceful degradation on timeout/network error
-    return { 
-      score: 12, 
-      maxScore: 15, 
-      status: 'safe',
-      partial: true,
-      reason: 'IP reputation check unavailable'
-    };
-  }
-}
-
-// SSL Certificate check
-async function checkSSL(url) {
-  try {
-    const https = require('https');
-    const urlObj = new URL(url.startsWith('http') ? url : `https://${url}`);
-    
-    if (urlObj.protocol !== 'https:') {
-      return { 
-        valid: false, 
-        error: 'Not using HTTPS', 
-        score: 0, 
-        maxScore: 15,
-        status: 'danger'
-      };
-    }
-    
-    return new Promise((resolve) => {
-      const req = https.request({
-        hostname: urlObj.hostname,
-        port: 443,
-        method: 'HEAD',
-        timeout: 10000
-      }, (res) => {
-        const cert = res.socket.getPeerCertificate();
-        
-        if (!cert || Object.keys(cert).length === 0) {
-          resolve({ 
-            valid: false, 
-            error: 'No certificate found', 
-            score: 0, 
-            maxScore: 15,
-            status: 'danger'
-          });
-          return;
-        }
-        
-        const validFrom = new Date(cert.valid_from);
-        const validTo = new Date(cert.valid_to);
-        const now = new Date();
-        const isValid = now >= validFrom && now <= validTo;
-        const daysUntilExpiry = Math.floor((validTo - now) / (1000 * 60 * 60 * 24));
-        
-        let score = 15;
-        let status = 'safe';
-        
-        if (!isValid) {
-          score = 0;
-          status = 'danger';
-        } else if (daysUntilExpiry < 30) {
-          score = 10;
-          status = 'warning';
-        }
-        
-        resolve({
-          valid: isValid,
-          issuer: cert.issuer?.O || 'Unknown',
-          validFrom: validFrom.toISOString(),
-          validTo: validTo.toISOString(),
-          daysUntilExpiry,
-          score,
-          maxScore: 15,
-          status
-        });
-      });
-      
-      req.on('error', (error) => {
-        resolve({ 
-          valid: false, 
-          error: error.message, 
-          score: 0, 
-          maxScore: 15,
-          status: 'danger'
-        });
-      });
-      
-      req.on('timeout', () => {
-        req.destroy();
-        resolve({ 
-          valid: false, 
-          error: 'Connection timeout', 
-          score: 5, 
-          maxScore: 15,
-          status: 'warning'
-        });
-      });
-      
-      req.end();
-    });
-  } catch (error) {
-    // Graceful degradation: assume safe if SSL check fails
-    console.error('SSL check error:', error.message);
-    return { 
-      valid: false, 
-      score: 8, 
-      maxScore: 15,
-      status: 'warning',
-      partial: true,
-      reason: 'SSL check unavailable'
-    };
-  }
-}
-
-// Domain age check using WHOIS-like heuristics
-async function checkDomainAge(url) {
-  try {
-    const urlObj = new URL(url.startsWith('http') ? url : `https://${url}`);
-    const domain = urlObj.hostname;
-
-    // If hostname is an IP literal, treat as highly suspicious
-    const isIp = /^(?:\d{1,3}\.){3}\d{1,3}$/.test(domain) || /^\[[0-9a-f:]+\]$/.test(domain);
-    if (isIp) {
-      return {
-        domain,
-        score: 0,
-        maxScore: 10,
-        status: 'danger',
-        warnings: ['Hostname is an IP address literal - suspicious'],
-        isHeuristic: true
-      };
-    }
-
-    let score = 10;
-    let status = 'safe';
-    const warnings = [];
-
-    // Check for homograph attacks (visual similarity confusion)
-    const homographPatterns = [
-      /[0o][0o]{2,}/i,  // Confusion between 0 and o
-      /[il1][il1]{2,}/,  // Confusion between i, l, and 1
-      /[5s][5s]{2,}/i,   // Confusion between 5 and s
-    ];
-
-    for (const pattern of homographPatterns) {
-      if (pattern.test(domain)) {
-        score -= 3;
-        warnings.push(`Possible homograph attack pattern detected`);
-      }
-    }
-
-    // Check for other suspicious patterns
-    const suspiciousPatterns = [
-      { pattern: /\d{4,}/, message: 'Long numeric sequence in domain', penalty: -2 },
-      { pattern: /-{2,}/, message: 'Multiple consecutive hyphens', penalty: -2 },
-      { pattern: /[a-z]{20,}/, message: 'Unusually long word component', penalty: -1 },
-    ];
-
-    for (const { pattern, message, penalty } of suspiciousPatterns) {
-      if (pattern.test(domain)) {
-        score += penalty;
-        warnings.push(message);
-      }
-    }
-
-    // Check for suspicious free TLDs
-    const tld = domain.split('.').pop();
-    const suspiciousTlds = ['tk', 'ml', 'ga', 'cf', 'gq'];
-    if (suspiciousTlds.includes(tld.toLowerCase())) {
-      score -= 2;
-      warnings.push(`Suspicious TLD: .${tld}`);
-    }
-
-    // Determine status based on final score
-    if (score < 4) status = 'danger';
-    else if (score < 7) status = 'warning';
-    else status = 'safe';
-
-    return {
-      domain,
-      score: Math.max(0, score),
-      maxScore: 10,
-      status,
-      warnings,
-      isHeuristic: true  // Mark as heuristic-based, not actual WHOIS
-    };
-  } catch (error) {
-    console.error('Domain age check error:', error.message);
-    return { 
-      error: error.message, 
-      score: 5, 
-      maxScore: 10, 
-      status: 'warning',
-      isHeuristic: true,
-      partial: true,
-      reason: 'Domain age check unavailable'
-    };
-  }
-}
-
-// WHOIS lookup (optional -- requires WHOIS_API_KEY in .env)
-async function fetchWhois(url) {
-  const apiKey = process.env.WHOIS_API_KEY;
-  
-  if (!apiKey) {
-    console.warn('⚠️ WHOIS API key not configured');
-    return { 
-      error: 'WHOIS API key not configured', 
-      score: 10, 
-      maxScore: 10,
-      status: 'warning',
-      available: false 
-    };
-  }
-  
-  try {
-    const urlObj = new URL(url.startsWith('http') ? url : `https://${url}`);
-    const domain = urlObj.hostname;
-    
-    // Check if hostname is an IP address (not a domain)
-    const isIP = /^(?:\d{1,3}\.){3}\d{1,3}$/.test(domain) || /^\[[0-9a-f:]+\]$/.test(domain);
-    if (isIP) {
-      console.warn(`⚠️ WHOIS skipped - hostname is IP address: ${domain}`);
-      return { 
-        error: 'Cannot perform WHOIS lookup on IP address', 
-        score: 5, 
-        maxScore: 10,
-        status: 'warning',
-        available: false,
-        reason: 'IP address detected - use AbuseIPDB instead'
-      };
-    }
-    
-    console.log(`📋 Fetching WHOIS data for domain: ${domain}`);
-    
-    // Use JSON output format explicitly
-    const whoisUrl = `https://www.whoisxmlapi.com/whoisserver/WhoisService?apiKey=${apiKey}&domainName=${encodeURIComponent(domain)}&outputFormat=JSON`;
-    
-    const response = await fetch(whoisUrl, { 
-      timeout: 30000,
-      headers: {
-        'Accept': 'application/json'
-      }
-    });
-    
-    // Check for API key errors
-    if (response.status === 401 || response.status === 403) {
-      console.error('❌ WHOIS API key error: Invalid or unauthorized');
-      return { 
-        error: 'Invalid or expired WHOIS API key', 
-        score: 10, 
-        maxScore: 10,
-        status: 'warning',
-        available: false 
-      };
-    }
-    
-    if (!response.ok) {
-      throw new Error(`WHOIS API returned ${response.status}: ${response.statusText}`);
-    }
-    
-    const data = await response.json();
-    
-    // Handle API errors in response
-    if (data.ErrorMessage || data.errors) {
-      const errorMsg = data.ErrorMessage?.msg || data.errors?.[0]?.message || JSON.stringify(data.errors);
-      console.error('WHOIS API error:', errorMsg);
-      return { 
-        error: errorMsg, 
-        score: 10, 
-        maxScore: 10,
-        status: 'warning' 
-      };
-    }
-    
-    // Extract WHOIS data from the response
-    const whoisRecord = data.WhoisRecord || {};
-    const registryData = whoisRecord.registryData || {};
-    
-    // Parse dates with proper error handling
-    let createdDate = null;
-    let createdTimestamp = null;
-    let expiresDate = null;
-    let ageInDays = null;
-    
-    try {
-      // Try multiple possible date fields
-      createdDate = registryData.createdDate || 
-                   whoisRecord.createdDate || 
-                   registryData.createdDateNormalized ||
-                   whoisRecord.createdDateNormalized;
-      
-      expiresDate = registryData.expiresDate || 
-                   whoisRecord.expiresDate || 
-                   registryData.expiresDateNormalized ||
-                   whoisRecord.expiresDateNormalized;
-      
-      if (createdDate) {
-        const created = new Date(createdDate);
-        if (!isNaN(created.getTime())) {
-          createdTimestamp = created.getTime();
-          ageInDays = Math.floor((Date.now() - created.getTime()) / (1000 * 60 * 60 * 24));
-          console.log(`📊 Domain age: ${ageInDays} days (created: ${createdDate})`);
-        }
-      }
-    } catch (dateError) {
-      console.warn('Date parsing error:', dateError.message);
-    }
-    
-    // Extract registrar information
-    const registrar = registryData.registrarName || whoisRecord.registrarName;
-    const nameServers = registryData.nameServers?.hostNames || 
-                       whoisRecord.nameServers?.hostNames || 
-                       [];
-    
-    // Calculate score based on domain age
-    let score = 10;
-    let status = 'safe';
-    let warnings = [];
-    
-    if (ageInDays !== null) {
-      if (ageInDays < 30) {
-        score = 3;
-        status = 'danger';
-        warnings.push(`New domain (< 30 days): ${ageInDays} days old`);
-      } else if (ageInDays < 90) {
-        score = 7;
-        status = 'warning';
-        warnings.push(`Relatively new domain (< 90 days): ${ageInDays} days old`);
-      } else if (ageInDays > 3650) { // 10 years
-        score = 10;
-        status = 'safe';
-        warnings.push(`Old domain (> 10 years): ${ageInDays} days old`);
-      }
-    } else {
-      // If we can't get age, penalize slightly
-      score = 5;
-      status = 'warning';
-      warnings.push('Unable to determine domain age');
-    }
-    
-    // Check for suspicious TLDs
-    const tld = domain.split('.').pop();
-    const suspiciousTlds = ['tk', 'ml', 'ga', 'cf', 'gq', 'xyz', 'top', 'loan'];
-    if (suspiciousTlds.includes(tld.toLowerCase())) {
-      score = Math.max(0, score - 3);
-      warnings.push(`Suspicious TLD: .${tld}`);
-    }
-    
-    // Check if domain uses privacy protection
-    const hasPrivacy = whoisRecord.dataError === 'MASKED_WHOIS_DATA' ||
-                      registrar?.includes('Privacy') ||
-                      registrar?.includes('Proxy') ||
-                      /redacted/i.test(JSON.stringify(whoisRecord));
-    
-    if (hasPrivacy) {
-      score = Math.max(0, score - 2);
-      warnings.push('WHOIS data is privacy-protected');
-      status = score < 7 ? 'warning' : status;
-    }
-    
-    console.log(`✅ WHOIS lookup successful - score: ${score}, status: ${status}`);
-    
-    return {
-      domain,
-      available: true,
-      registrar,
-      createdDate,
-      expiresDate,
-      ageInDays,
-      createdDateTimestamp: createdTimestamp,
-      nameServers: nameServers.slice(0, 5), // Limit to first 5
-      hasPrivacy,
-      score,
-      maxScore: 10,
-      status,
-      warnings,
-      safeData: {
-        domain,
-        ageInDays,
-        registrar,
-        createdDate,
-        expiresDate,
-        hasPrivacy,
-        tld
-      }
-    };
-    
-  } catch (error) {
-    console.error('WHOIS fetch error:', error.message);
-    
-    // Graceful degradation with safe default - never show error to user
-    return { 
-      score: 5, 
-      maxScore: 10,
-      status: 'warning',
-      partial: true,
-      reason: 'Domain information unavailable',
-      safeData: {}
-    };
-  }
-}
-
-// Content analysis
-async function analyzeContent(url) {
-  try {
-    const response = await fetch(url.startsWith('http') ? url : `https://${url}`, {
-      timeout: 10000,
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (compatible; GuardianLink/1.0; Security Scanner)'
-      }
-    });
-
-    const html = await response.text();
-    const lowerHtml = html.toLowerCase();
-
-    let score = 15;
-    let status = 'safe';
-    const findings = [];
-
-    // Expanded phishing indicators
-    const phishingKeywords = [
-      'verify your account',
-      'confirm your identity',
-      'suspended account',
-      'unusual activity',
-      'update payment',
-      'click here immediately',
-      'login',
-      'sign in',
-      'username',
-      'password',
-      'bank'
-    ];
-
-    for (const keyword of phishingKeywords) {
-      if (lowerHtml.includes(keyword)) {
-        score -= 3;
-        findings.push(`Suspicious phrase: "${keyword}"`);
-      }
-    }
-
-    // Detect explicit password inputs
-    if (/<input[^>]*type=["']?password["']?/i.test(html)) {
-      score -= 5;
-      findings.push('Password input detected');
-    }
-
-    // Detect meta refresh redirect
-    if (/<meta[^>]*http-equiv=["']?refresh["']?/i.test(html)) {
-      score -= 3;
-      findings.push('Meta refresh redirect detected');
-    }
-
-    // Detect JS redirects
-    if (/(window\.location|document\.location|location\.href|location.replace|location.assign)/i.test(html)) {
-      score -= 3;
-      findings.push('JavaScript redirect detected');
-    }
-
-    // Detect obfuscated script patterns (simple heuristics)
-    if (/(eval\(|unescape\(|atob\(|btoa\()/.test(html) || /%[0-9a-f]{2}/i.test(html)) {
-      score -= 2;
-      findings.push('Potential obfuscated content detected');
-    }
-
-    // Check for hidden forms (improved)
-    if (/<input[^>]*type=["']?hidden["']?/i.test(html) && /password/i.test(html)) {
-      score -= 4;
-      findings.push('Hidden password-related field detected');
-    }
-
-    // Check for external form submissions (keeps prior behaviour)
-    const formMatch = html.match(/<form[^>]*action=["']([^"']+)["']/gi);
-    if (formMatch) {
-      const urlHost = new URL(url.startsWith('http') ? url : `https://${url}`).hostname;
-      for (const form of formMatch) {
-        const actionMatch = form.match(/action=["']([^"']+)["']/i);
-        if (actionMatch && actionMatch[1].startsWith('http')) {
-          try {
-            const formHost = new URL(actionMatch[1]).hostname;
-            if (formHost !== urlHost) {
-              score -= 4;
-              findings.push(`External form submission to: ${formHost}`);
-            }
-          } catch {}
-        }
-      }
-    }
-
-    if (score < 10) status = 'warning';
-    if (score < 5) status = 'danger';
-
-    return {
-      score: Math.max(0, score),
-      maxScore: 15,
-      status,
-      findings
-    };
-  } catch (error) {
-    console.error('Content analysis error:', error.message);
-    // Graceful degradation: assume safe if content analysis fails
-    return { 
-      score: 12, 
-      maxScore: 15, 
-      status: 'safe',
-      partial: true,
-      reason: 'Content analysis unavailable',
-      findings: []
-    };
-  }
-}
-
-// Google Safe Browsing check
-async function checkWithGoogleSafeBrowsing(url) {
-  const apiKey = process.env.GOOGLE_SAFE_BROWSING_API_KEY;
-  
-  if (!apiKey) {
-    console.warn('⚠️ Google Safe Browsing API key not configured');
-    return { 
-      error: 'API key not configured', 
-      score: 10, 
-      maxScore: 15,
-      status: 'warning',
-      available: false 
-    };
-  }
-  
-  try {
-    const response = await fetch('https://safebrowsing.googleapis.com/v4/threatMatches:find?key=' + apiKey, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        client: {
-          clientId: 'guardianlink',
-          clientVersion: '2.0'
-        },
-        threatInfo: {
-          threatTypes: ['MALWARE', 'SOCIAL_ENGINEERING', 'UNWANTED_SOFTWARE', 'POTENTIALLY_HARMFUL_APPLICATION'],
-          platformTypes: ['ANY_PLATFORM'],
-          threatEntryTypes: ['URL'],
-          threatEntries: [
-            { url: url }
-          ]
-        }
-      })
-    });
-
-    const data = await response.json();
-    
-    if (data.error) {
-      const errorMsg = data.error.message || JSON.stringify(data.error);
-      if (errorMsg.includes('API key') || errorMsg.includes('INVALID_ARGUMENT') || errorMsg.includes('Invalid')) {
-        console.error('❌ Google Safe Browsing API key error:', errorMsg);
-        return { 
-          error: 'Invalid or expired API key', 
-          score: 10, 
-          maxScore: 15,
-          status: 'warning',
-          available: false 
-        };
-      }
-      console.error('Google Safe Browsing error:', data.error);
-      return { 
-        error: errorMsg, 
-        score: 10, 
-        maxScore: 15,
-        status: 'warning'
-      };
-    }
-
-    // If matches found, it's dangerous
-    if (data.matches && data.matches.length > 0) {
-      const threats = data.matches.map(m => m.threatType).join(', ');
-      return {
-        safe: false,
-        threats: threats,
-        matchCount: data.matches.length,
-        score: 0,
-        maxScore: 15,
-        status: 'danger',
-        details: data.matches
-      };
-    }
-
-    // No threats found
-    return {
-      safe: true,
-      threats: 'none',
-      matchCount: 0,
-      score: 15,
-      maxScore: 15,
-      status: 'safe'
-    };
-  } catch (error) {
-    console.error('Google Safe Browsing check error:', error.message);
-    // Graceful degradation: assume safe if check unavailable
-    return { 
-      score: 13, 
-      maxScore: 15, 
-      status: 'safe',
-      partial: true,
-      reason: 'Google Safe Browsing check unavailable',
-      threats: []
-    };
-  }
-}
-
-// Redirect chain analysis
-async function analyzeRedirects(url) {
-  try {
-    const redirects = [];
-    let currentUrl = url.startsWith('http') ? url : `https://${url}`;
-    let maxRedirects = 10;
-
-    while (maxRedirects > 0) {
-      const response = await fetch(currentUrl, {
-        redirect: 'manual',
-        timeout: 5000
-      });
-
-      const location = response.headers.get('location');
-      if (location && (response.status >= 300 && response.status < 400)) {
-        redirects.push({
-          from: currentUrl,
-          to: location,
-          status: response.status
-        });
-        currentUrl = location.startsWith('http') ? location : new URL(location, currentUrl).href;
-        maxRedirects--;
-      } else {
-        break;
-      }
-    }
-
-    let score = 10;
-    let status = 'safe';
-
-    if (redirects.length > 3) {
-      score -= 3;
-      status = 'warning';
-    }
-
-    if (redirects.length > 5) {
-      score -= 4;
-      status = 'danger';
-    }
-
-    // Check for suspicious redirect destinations and IP destinations
-    for (const redirect of redirects) {
-      try {
-        const toHost = new URL(redirect.to).hostname;
-        if (toHost.includes('bit.ly') || toHost.includes('tinyurl') || toHost.includes('t.co')) {
-          score -= 2;
-          redirect.suspicious = 'known shortener';
-        }
-        if (/^(?:\d{1,3}\.){3}\d{1,3}$/.test(toHost) || /^\[[0-9a-f:]+\]$/.test(toHost)) {
-          score -= 3;
-          redirect.suspicious = 'redirects to IP host';
-        }
-      } catch {}
-    }
-
-    // Fetch final destination content to detect meta/JS redirects not using Location header
-    try {
-      const finalResp = await fetch(currentUrl, { timeout: 8000, redirect: 'follow' });
-      const finalHtml = await finalResp.text();
-      if (/<meta[^>]*http-equiv=["']?refresh["']?/i.test(finalHtml)) {
-        score -= 3;
-      }
-      if (/(window\.location|document\.location|location\.href|location.replace|location.assign)/i.test(finalHtml)) {
-        score -= 3;
-      }
-    } catch (e) {
-      // ignore final content issues
-    }
-
-    if (score < 7) status = 'warning';
-    if (score < 4) status = 'danger';
-
-    return {
-      redirectCount: redirects.length,
-      redirects,
-      score: Math.max(0, score),
-      maxScore: 10,
-      status
-    };
-  } catch (error) {
-    console.error('Redirect analysis error:', error.message);
-    // Graceful degradation: assume safe if redirect check unavailable
-    return { 
-      score: 10, 
-      maxScore: 10, 
-      status: 'safe',
-      partial: true,
-      reason: 'Redirect analysis unavailable',
-      redirects: []
-    };
-  }
-}
-
-// Headers security check
-async function checkSecurityHeaders(url) {
-  try {
-    const response = await fetch(url.startsWith('http') ? url : `https://${url}`, {
-      timeout: 10000
-    });
-    
-    const headers = response.headers;
-    let score = 0;
-    const maxScore = 10;
-    const findings = [];
-    
-    const securityHeaders = {
-      'strict-transport-security': 2,
-      'x-content-type-options': 1,
-      'x-frame-options': 1,
-      'x-xss-protection': 1,
-      'content-security-policy': 3,
-      'referrer-policy': 1,
-      'permissions-policy': 1
-    };
-    
-    for (const [header, points] of Object.entries(securityHeaders)) {
-      if (headers.get(header)) {
-        score += points;
-        findings.push(`✓ ${header}`);
-      } else {
-        findings.push(`✗ Missing ${header}`);
-      }
-    }
-    
-    score = Math.min(score, maxScore);
-    let status = 'safe';
-    if (score < 7) status = 'warning';
-    if (score < 4) status = 'danger';
-    
-    return {
-      score,
-      maxScore,
-      status,
-      findings
-    };
-  } catch (error) {
-    console.error('Security headers check error:', error.message);
-    // Graceful degradation: return warning status with explanation
-    return { 
-      score: 5, 
-      maxScore: 10, 
-      status: 'warning',
-      partial: true,
-      reason: 'Security headers check unavailable',
-      findings: []
-    };
-  }
-}
-
-// Main scan endpoint (with user auth)
-app.post('/api/scan', async (req, res) => {
-  const { url, source } = req.body;
-  const scanStartTime = Date.now();
+// Scan URL with AI
+app.post('/api/scan/url', async (req, res) => {
+  const startTime = Date.now();
+  const { url } = req.body;
   
   if (!url) {
     return res.status(400).json({ error: 'URL is required' });
   }
-
-  // === CACHE CHECK BEFORE CREATING SCAN ID ===
-  const cachedResult = urlCache.getCachedScan(url);
-  if (cachedResult && cachedResult.verdict) {
-    const cacheHitTime = Date.now() - scanStartTime;
-    console.log(`⚡ CACHE HIT on scan request for ${url} (${cacheHitTime}ms)`);
-    
-    // Return cached result immediately with ALL original phases
-    const scanId = crypto.randomUUID();
-    const isSafe = cachedResult.verdict === 'SAFE';
-    const metadata = cachedResult.metadata || {};
-    
-    // Use full cached phases if available - shows complete analysis just like fresh check
-    const cachedPhases = metadata.phases || {
-      cache: {
-        name: 'URL Cache',
-        score: metadata.score || Math.round(cachedResult.confidence * 100),
-        maxScore: 100,
-        status: isSafe ? 'safe' : 'danger',
-        reason: 'Fast lookup from analysis cache',
-        cacheAgeMs: cachedResult.ageMs
-      }
-    };
-    
-    const result = {
-      scanId,
-      url,
-      verdict: metadata.verdict || (cachedResult.verdict === 'SAFE' ? 'ALLOW' : (cachedResult.verdict === 'MALICIOUS' ? 'BLOCK' : 'WARN')),
-      score: metadata.score || Math.round(cachedResult.confidence * 100),
-      riskLevel: metadata.riskLevel || (isSafe ? 'SAFE' : 'CRITICAL'),
-      confidence: cachedResult.confidence,
-      timestamp: new Date().toISOString(),
-      phases: cachedPhases,  // FULL phases with all original analysis details
-      totalScore: metadata.totalScore || Math.round(cachedResult.confidence * 100),
-      maxTotalScore: metadata.maxTotalScore || 100,
-      percentage: metadata.score || Math.round(cachedResult.confidence * 100),
-      overallStatus: metadata.overallStatus || (isSafe ? 'safe' : 'danger'),
-      source: source || 'extension',
-      cached: true,
-      completed: true,
-      responseTimeMs: cacheHitTime,
-      showProceedButton: metadata.verdict === 'WARN' || metadata.verdict === 'BLOCK'
-    };
-    
-    // Store in results cache for immediate retrieval
-    scanResults.set(scanId, {
-      ...result,
-      completedAt: new Date().toISOString()
-    });
-    
-    // Return COMPLETED result immediately
+  
+  console.log(`🔍 AI Scanning URL: ${url}`);
+  
+  // Check cache
+  const cacheKey = `url:${url}`;
+  const cached = scanCache.get(cacheKey);
+  if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
+    console.log(`⚡ Cache hit for URL: ${url}`);
     return res.json({
-      status: 'completed',
-      scanId: scanId,
-      message: 'Scan completed from cache',
-      timestamp: new Date().toISOString(),
-      responseTimeMs: cacheHitTime,
-      ...result
+      ...cached.data,
+      cached: true,
+      cache_age_ms: Date.now() - cached.timestamp
     });
   }
-
-  const scanId = crypto.randomUUID();
-  
-  console.log(`\n🔍 Scan ${scanId} started for: ${url} (from ${source || 'website'})`);
-  
-  // === Store initial state IMMEDIATELY in cache ===
-  scanResults.set(scanId, {
-    status: 'processing',
-    scanId,
-    url,
-    startedAt: new Date().toISOString(),
-    message: 'Scan started'
-  });
-  
-  // === IMMEDIATE RESPONSE - Don't wait for full scan ===
-  res.json({
-    status: 'processing',
-    scanId: scanId,
-    message: 'Scan started in background',
-    timestamp: new Date().toISOString(),
-    responseTimeMs: Date.now() - scanStartTime
-  });
-  
-  // === Process scan in background ===
-  processScanInBackground(url, scanId, source);
-});
-
-/**
- * Check if URL is a search engine
- */
-function isSearchEngine(url) {
-  try {
-    const urlObj = new URL(url);
-    const hostname = urlObj.hostname;
-    
-    const searchEngines = [
-      'bing.com',
-      'google.com/search',
-      'yahoo.com/search',
-      'duckduckgo.com',
-      'startpage.com',
-      'ecosia.org'
-    ];
-    
-    return searchEngines.some(engine => hostname.includes(engine));
-  } catch (e) {
-    return false;
-  }
-}
-
-/**
- * Process scan in background and store results
- * Optimized with performance tracking
- */
-async function processScanInBackground(url, scanId, source) {
-  const scanProcessStartTime = Date.now();
   
   try {
-    // ========== CACHE CHECK (Ultra-fast, milliseconds) ==========
-    const cacheCheckStartTime = Date.now();
-    const cachedResult = urlCache.getCachedScan(url);
-    const cacheCheckTime = Date.now() - cacheCheckStartTime;
+    // Step 1: Extract features
+    const featureStart = Date.now();
+    const features = URLFeatureExtractor.extractFeatures(url);
+    const featureTime = Date.now() - featureStart;
     
-    if (cachedResult && cachedResult.verdict) {
-      console.log(`⚡ Cache HIT for ${url} (check time: ${cacheCheckTime}ms, age: ${cachedResult.ageMs}ms)`);
-      
-      const isSafe = cachedResult.verdict === 'SAFE';
-      const metadata = cachedResult.metadata || {};
-      
-      // Return FULL cached analysis - identical to fresh scan results
-      const cachedPhases = metadata.phases || {
-        cache: {
-          name: 'URL Cache',
-          score: metadata.score || Math.round(cachedResult.confidence * 100),
-          maxScore: 100,
-          status: isSafe ? 'safe' : 'danger',
-          reason: 'Fast lookup from analysis cache',
-          cacheAgeMs: cachedResult.ageMs,
-          responseTimeMs: cacheCheckTime
-        }
-      };
-      
-      const result = {
-        scanId,
-        url,
-        verdict: metadata.verdict || (isSafe ? 'ALLOW' : 'BLOCK'),
-        score: metadata.score || Math.round(cachedResult.confidence * 100),
-        riskLevel: metadata.riskLevel || (isSafe ? 'SAFE' : 'CRITICAL'),
-        confidence: cachedResult.confidence,
-        timestamp: new Date().toISOString(),
-        phases: cachedPhases,  // FULL phases with all original analysis - user sees everything
-        totalScore: metadata.totalScore || Math.round(cachedResult.confidence * 100),
-        maxTotalScore: metadata.maxTotalScore || 100,
-        percentage: metadata.score || Math.round(cachedResult.confidence * 100),
-        overallStatus: metadata.overallStatus || (isSafe ? 'safe' : 'danger'),
-        source: source || 'extension',
-        cached: true,
-        completed: true,
-        performanceMetrics: {
-          cacheCheckMs: cacheCheckTime,
-          totalProcessTimeMs: Date.now() - scanProcessStartTime
-        },
-        showProceedButton: metadata.verdict === 'WARN' || metadata.verdict === 'BLOCK'
-      };
-      
-      const endTime = Date.now();
-      const scanTimeMs = endTime - (scanStartTimes.get(scanId) || endTime);
-      
-      scanResults.set(scanId, {
-        ...result,
-        completed: true,
-        completedAt: new Date().toISOString()
-      });
-      
-      // Log to database
-      dbLocal.logScan(url, result.verdict, result.confidence, result, scanTimeMs, true);
-      
-      return;
-    }
+    console.log(`📊 Extracted ${Object.keys(features).length} features in ${featureTime}ms`);
     
-    trackPerformance(scanId, 'cacheCheckMs', cacheCheckTime);
+    // Step 2: ML Prediction
+    const mlStart = Date.now();
+    const mlResult = await MLService.predictUrl(features);
+    const mlTime = Date.now() - mlStart;
     
-    // ✅ Skip non-HTTP URLs
-    if (!url.startsWith('http://') && !url.startsWith('https://')) {
-      console.log(`⏭️ Skipping non-HTTP URL: ${url}`);
-      const result = {
-        scanId,
-        url,
-        verdict: 'ALLOW',
-        score: 100,
-        riskLevel: 'SAFE',
-        timestamp: new Date().toISOString(),
-        phases: {
-          urlValidation: { 
-            name: 'URL Validation', 
-            score: 100, 
-            maxScore: 100, 
-            status: 'safe', 
-            reason: 'Non-HTTP URL (system page)',
-            evidence: 'Automatically allowed'
-          }
-        },
-        totalScore: 100,
-        maxTotalScore: 100,
-        percentage: 100,
-        overallStatus: 'safe',
-        source: source || 'website'
-      };
-      
-      scanResults.set(scanId, {
-        ...result,
-        completed: true,
-        completedAt: new Date().toISOString()
-      });
-      
-      return;
-    }
+    // Step 3: Heuristics analysis
+    const heuristicResult = heuristicsManager.evaluate(url, features);
     
-    // Phase 1: Whitelist check (fast)
-    const whitelistMatch = rulesManager.isWhitelisted(url);
-    if (whitelistMatch) {
-      console.log(`✅ Whitelist hit for ${url} - returning safe`);
-      const result = {
-        scanId,
-        url,
-        verdict: 'ALLOW',
-        score: 100,
-        riskLevel: 'SAFE',
-        timestamp: new Date().toISOString(),
-        phases: {
-          whitelist: { name: 'Whitelist Check', score: 100, maxScore: 100, status: 'safe', reason: 'Whitelisted domain', evidence: whitelistMatch }
-        },
-        totalScore: 100,
-        maxTotalScore: 100,
-        percentage: 100,
-        overallStatus: 'safe',
-        source: source || 'website'
-      };
-      
-      scanResults.set(scanId, {
-        ...result,
-        completed: true,
-        completedAt: new Date().toISOString()
-      });
-      
-      // Store in database
-      db.run(
-        'UPDATE scans SET status = ?, scan_result = ? WHERE id = ?',
-        ['completed', JSON.stringify(result), scanId],
-        (err) => { if (err) console.error('Failed to save scan:', err); }
-      );
-      
-      return;
-    }
-
-    // Phase 2: Search engine detection (safe engines, no analysis needed)
-    if (isSearchEngine(url)) {
-      console.log(`🔍 Search engine detected: ${url} - returning safe`);
-      const result = {
-        scanId,
-        url,
-        verdict: 'ALLOW',
-        score: 100,
-        riskLevel: 'SAFE',
-        timestamp: new Date().toISOString(),
-        phases: {
-          searchEngine: { 
-            name: 'Search Engine Detection', 
-            score: 100, 
-            maxScore: 100, 
-            status: 'safe', 
-            reason: 'Search engine domain',
-            evidence: 'Automatically allowed for browsing'
-          }
-        },
-        totalScore: 100,
-        maxTotalScore: 100,
-        percentage: 100,
-        overallStatus: 'safe',
-        source: source || 'website'
-      };
-      
-      scanResults.set(scanId, {
-        ...result,
-        completed: true,
-        completedAt: new Date().toISOString()
-      });
-      
-      // Store in database
-      db.run(
-        'UPDATE scans SET status = ?, scan_result = ? WHERE id = ?',
-        ['completed', JSON.stringify(result), scanId],
-        (err) => { if (err) console.error('Failed to save scan:', err); }
-      );
-      
-      return;
-    }
-
-    // Phase 3: Local blacklist (fast)
-    const blacklistMatch = rulesManager.isBlacklisted(url);
-    if (blacklistMatch) {
-      console.log(`🚫 Blacklist hit for ${url} - returning blocked`);
-      const result = {
-        scanId,
-        url,
-        verdict: 'BLOCK',
-        score: 0,
-        riskLevel: 'CRITICAL',
-        timestamp: new Date().toISOString(),
-        phases: {
-          localBlacklist: { name: 'Local Blacklist', score: 0, maxScore: 100, status: 'danger', reason: 'Blacklisted domain', evidence: blacklistMatch }
-        },
-        totalScore: 0,
-        maxTotalScore: 100,
-        percentage: 0,
-        overallStatus: 'danger',
-        source: source || 'website'
-      };
-      
-      scanResults.set(scanId, {
-        ...result,
-        completed: true,
-        completedAt: new Date().toISOString()
-      });
-      
-      // Store in database
-      db.run(
-        'UPDATE scans SET status = ?, scan_result = ? WHERE id = ?',
-        ['completed', JSON.stringify(result), scanId],
-        (err) => { if (err) console.error('Failed to save scan:', err); }
-      );
-      
-      return;
-    }
-
-    // Store scan as pending in database
-    db.run(
-      'INSERT INTO scans (id, user_id, url, status) VALUES (?, ?, ?, ?)',
-      [scanId, null, url, 'pending'],
-      (err) => { if (err) console.error('Failed to log scan:', err); }
-    );
+    // Step 4: Combine results
+    const combinedScore = this.combineScores(mlResult, heuristicResult);
     
-    // Record start time
-    scanStartTimes.set(scanId, Date.now());
+    // Step 5: Determine verdict
+    const verdict = this.determineVerdict(combinedScore, mlResult.confidence);
     
-    // === FULLY PARALLELIZED Full analysis (all phases run in parallel) ===
-    // Using Promise.allSettled() to not wait for slow/failed APIs
-    const phaseStartTime = Date.now();
-    console.log(`🚀 Starting ${8} parallel API checks...`);
-    
-    const results = await Promise.allSettled([
-      withTimeout(scanWithVirusTotal(url), 2500),  // Optimized to 2.5s (submit 2.5s + fast polling)
-      withTimeout(checkWithAbuseIPDB(url), 3000),
-      withTimeout(checkSSL(url), 3000),
-      withTimeout(analyzeContent(url), 3000),
-      withTimeout(analyzeRedirects(url), 3000),
-      withTimeout(checkSecurityHeaders(url), 3000),
-      withTimeout(fetchWhois(url), 3000),
-      withTimeout(checkWithGoogleSafeBrowsing(url), 3000)
-    ]);
-    
-    const virusTotal = results[0].status === 'fulfilled' ? results[0].value : { score: 10, maxScore: 25, status: 'warning', partial: true, available: false, reason: 'Check completed' };
-    const abuseIPDB = results[1].status === 'fulfilled' ? results[1].value : { score: 12, maxScore: 15, status: 'safe', partial: true, reason: 'IP reputation check unavailable' };
-    const ssl = results[2].status === 'fulfilled' ? results[2].value : { score: 8, maxScore: 15, status: 'warning', partial: true, reason: 'SSL check unavailable' };
-    const content = results[3].status === 'fulfilled' ? results[3].value : { score: 12, maxScore: 15, status: 'safe', partial: true, reason: 'Content analysis unavailable' };
-    const redirects = results[4].status === 'fulfilled' ? results[4].value : { score: 10, maxScore: 10, status: 'safe', partial: true, reason: 'Redirect analysis unavailable' };
-    const securityHeaders = results[5].status === 'fulfilled' ? results[5].value : { score: 5, maxScore: 10, status: 'warning', partial: true, reason: 'Security headers check unavailable' };
-    const whois = results[6].status === 'fulfilled' ? results[6].value : { score: 5, maxScore: 10, status: 'warning', partial: true, reason: 'Domain information unavailable' };
-    const googleSafeBrowsing = results[7].status === 'fulfilled' ? results[7].value : { score: 13, maxScore: 15, status: 'safe', partial: true, reason: 'Google Safe Browsing check unavailable' };
-    
-    const parallelTime = Date.now() - phaseStartTime;
-    console.log(`⏱️ Parallel phase analysis completed in ${parallelTime}ms`);
-
-    const phases = {
-      virusTotal: { name: 'VirusTotal Analysis', ...virusTotal },
-      abuseIPDB: { name: 'AbuseIPDB Check', ...abuseIPDB },
-      ssl: { name: 'SSL Certificate', ...ssl },
-      content: { name: 'Content Analysis', ...content },
-      redirects: { name: 'Redirect Analysis', ...redirects },
-      securityHeaders: { name: 'Security Headers', ...securityHeaders },
-      googleSafeBrowsing: { name: 'Google Safe Browsing', ...googleSafeBrowsing }
-    };
-
-    // Use WHOIS if available, otherwise fall back to heuristic domain age check
-    if (whois && whois.available === true && whois.score !== undefined) {
-      // WHOIS data available - use it
-      phases.whois = { name: 'WHOIS Lookup', ...whois };
-    } else {
-      // WHOIS not available - use heuristic-based domain age check
-      const domainAge = await checkDomainAge(url);
-      phases.domainAge = { name: 'Domain Analysis (Heuristic)', ...domainAge };
-    }
-
-    // Evaluate heuristics
-    const heuristicsResult = heuristicsManager.evaluate(url, {
-      ssl,
-      content,
-      abuseIPDB,
-      redirects,
-      securityHeaders,
-      whois: whois && whois.available === true && whois.score !== undefined ? whois : null,
-      domain: (() => { try { return new URL(url).hostname; } catch { return url; } })()
-    });
-
-    phases.heuristics = { name: 'Heuristic Rules', ...heuristicsResult };
-    
-    // Calculate total score
-    let totalScore = 0;
-    let maxTotalScore = 0;
-    
-    for (const phase of Object.values(phases)) {
-      totalScore += phase.score || 0;
-      maxTotalScore += phase.maxScore || 0;
-    }
-    
-    const percentage = Math.round((totalScore / maxTotalScore) * 100);
-    let overallStatus = 'safe';
-    let verdict = 'ALLOW';
-    let riskLevel = 'SAFE';
-    
-    if (percentage >= 80) {
-      overallStatus = 'safe';
-      verdict = 'ALLOW';
-      riskLevel = 'SAFE';
-    } else if (percentage >= 50) {
-      overallStatus = 'warning';
-      verdict = 'WARN';
-      riskLevel = 'MEDIUM';
-    } else {
-      overallStatus = 'danger';
-      verdict = 'BLOCK';
-      riskLevel = 'CRITICAL';
-    }
-    
+    // Prepare response
     const result = {
-      scanId,
-      url,
-      verdict,
-      score: percentage,
-      riskLevel,
-      timestamp: new Date().toISOString(),
-      phases,
-      totalScore,
-      maxTotalScore,
-      percentage,
-      overallStatus,
-      source: source || 'website'
-    };
-
-    // Remove raw WHOIS data in production for privacy
-    if (process.env.NODE_ENV === 'production' && result.phases.whois?.raw) {
-      delete result.phases.whois.raw;
-    }
-    
-    // ========== CACHE RESULT ==========
-    // Store COMPLETE result in cache including all phases
-    const cacheVerdict = verdict === 'ALLOW' ? 'SAFE' : 'MALICIOUS';
-    const cacheConfidence = percentage / 100;
-    urlCache.upsertScan(url, cacheVerdict, cacheConfidence, {
-      riskLevel,
-      overallStatus,
-      sources: Object.keys(phases).filter(p => phases[p].score !== undefined),
-      phases: phases, // Store complete phases object!
-      verdict,
-      score: percentage,
-      totalScore,
-      maxTotalScore
-    });
-    
-    // ========== LEARNING FROM VIRUSTOTAL ==========
-    // If VirusTotal detected malicious AND we flagged it, learn the pattern
-    if (virusTotal?.mandate === 'malicious' && verdict === 'BLOCK') {
-      const learningContext = {
-        virusTotal,
-        content,
-        redirects,
-        url_uses_ip: phases.abuseIPDB?.score === 0,
-        whois
-      };
-      
-      const learnResult = learnFromVirusTotal(url, learningContext);
-      if (learnResult.learned) {
-        result.learningResult = {
-          learned: true,
-          ruleId: learnResult.ruleId,
-          message: `New heuristic rule learned: ${learnResult.ruleId}`
-        };
-      }
-    }
-    
-    // ========== COLLECT PERFORMANCE METRICS ==========
-    const totalElapsedMs = Date.now() - scanProcessStartTime;
-    const performanceMetrics = {
-      totalProcessTimeMs: totalElapsedMs,
-      parallelPhaseTimeMs: parallelTime,
-      apiCallsParallel: 8,
-      cacheCheckMs: trackPerformance(scanId, 'totalProcessTimeMs', totalElapsedMs) // Retrieve if set earlier
+      scan_id: crypto.randomUUID(),
+      url: url,
+      verdict: verdict,
+      confidence: mlResult.confidence,
+      risk_score: combinedScore,
+      model_used: mlResult.model_used,
+      analysis_time_ms: Date.now() - startTime,
+      features_analyzed: Object.keys(features).length,
+      detailed_analysis: {
+        ml_prediction: {
+          is_malicious: mlResult.is_malicious,
+          confidence: mlResult.confidence,
+          top_features: mlResult.top_features,
+          probabilities: mlResult.probabilities
+        },
+        heuristics: heuristicResult,
+        feature_extraction_time: featureTime,
+        ml_inference_time: mlTime
+      },
+      recommendations: this.generateRecommendations(verdict, mlResult, heuristicResult)
     };
     
-    result.performanceMetrics = performanceMetrics;
-    
-    // Store completed result
-    scanResults.set(scanId, {
-      ...result,
-      completed: true,
-      completedAt: new Date().toISOString()
+    // Cache result
+    scanCache.set(cacheKey, {
+      data: result,
+      timestamp: Date.now()
     });
     
     // Store in database
-    db.run(
-      'UPDATE scans SET status = ?, scan_result = ? WHERE id = ?',
-      ['completed', JSON.stringify(result), scanId],
-      (err) => { if (err) console.error('Failed to save scan:', err); }
-    );
+    await this.storeScanInDatabase(result);
     
-    // Log to local SQLite database for analytics
-    const elapsedMs = Date.now() - scanStartTimes.get(scanId);
-    dbLocal.logScan(url, verdict, cacheConfidence, result, elapsedMs, false);
-    
-    const elapsedMs2 = Date.now() - scanStartTimes.get(scanId);
-    console.log(`\n${'='.repeat(70)}`);
-    console.log(`✅ SCAN COMPLETE: ${scanId}`);
-    console.log(`URL: ${url}`);
-    console.log(`Overall Score: ${percentage}% (${overallStatus.toUpperCase()})`);
-    console.log(`Verdict: ${verdict}`);
-    console.log(`⏱️ Performance Metrics:`);
-    console.log(`   Total Time: ${elapsedMs2}ms`);
-    console.log(`   Parallel API Calls: ${performanceMetrics.apiCallsParallel} concurrent`);
-    console.log(`   Parallel Phase Time: ${performanceMetrics.parallelPhaseTimeMs}ms`);
-    console.log(`${'='.repeat(70)}\n`);
+    res.json(result);
     
   } catch (error) {
-    console.error(`❌ Scan ${scanId} failed:`, error.message);
+    console.error('❌ URL scan error:', error);
+    res.status(500).json({
+      error: 'Scan failed',
+      message: error.message,
+      fallback_verdict: 'WARN',
+      confidence: 0.5
+    });
+  }
+});
+
+// Scan file with AI
+app.post('/api/scan/file', async (req, res) => {
+  try {
+    // For now, return not implemented with mock data
+    // In production, you would:
+    // 1. Extract file features
+    // 2. Use file ML model
+    // 3. Return prediction
     
-    const errorResult = {
-      scanId,
-      url,
-      error: error.message,
-      completed: true,
-      completedAt: new Date().toISOString(),
-      verdict: 'ALLOW', // Default to allow on error
-      score: 100,
-      riskLevel: 'SAFE'
-    };
+    res.json({
+      scan_id: crypto.randomUUID(),
+      verdict: 'PENDING',
+      message: 'File scanning coming soon',
+      note: 'Train file model using EMBER dataset for production'
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Bulk URL scan
+app.post('/api/scan/bulk', async (req, res) => {
+  const { urls } = req.body;
+  
+  if (!urls || !Array.isArray(urls) || urls.length === 0) {
+    return res.status(400).json({ error: 'URLs array is required' });
+  }
+  
+  if (urls.length > 50) {
+    return res.status(400).json({ error: 'Maximum 50 URLs per request' });
+  }
+  
+  console.log(`🔍 Bulk scanning ${urls.length} URLs`);
+  
+  try {
+    const results = [];
     
-    scanResults.set(scanId, errorResult);
+    for (const url of urls) {
+      try {
+        const features = URLFeatureExtractor.extractFeatures(url);
+        const mlResult = await MLService.predictUrl(features);
+        
+        results.push({
+          url: url,
+          is_malicious: mlResult.is_malicious,
+          confidence: mlResult.confidence,
+          risk_level: mlResult.is_malicious ? 'HIGH' : 'LOW'
+        });
+      } catch (error) {
+        results.push({
+          url: url,
+          error: error.message,
+          status: 'failed'
+        });
+      }
+    }
     
-    // Store error in database
-    db.run(
-      'UPDATE scans SET status = ?, scan_result = ? WHERE id = ?',
-      ['error', JSON.stringify(errorResult), scanId],
-      (err) => { if (err) console.error('Failed to save error:', err); }
+    // Statistics
+    const maliciousCount = results.filter(r => r.is_malicious).length;
+    const avgConfidence = results
+      .filter(r => r.confidence)
+      .reduce((sum, r) => sum + r.confidence, 0) / results.length;
+    
+    res.json({
+      total_scanned: urls.length,
+      malicious_count: maliciousCount,
+      safe_count: urls.length - maliciousCount,
+      avg_confidence: avgConfidence,
+      results: results
+    });
+    
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get scan history
+app.get('/api/scans', async (req, res) => {
+  try {
+    const limit = parseInt(req.query.limit) || 50;
+    const offset = parseInt(req.query.offset) || 0;
+    
+    const result = await pool.query(
+      'SELECT id, url, verdict, confidence, model_used, analysis_time_ms, created_at FROM scans ORDER BY created_at DESC LIMIT $1 OFFSET $2',
+      [limit, offset]
     );
-  }
-}
-
-/**
- * Poll for scan results
- * OPTIMIZED: Returns immediately if scan complete, checks cache for instant hits
- */
-app.get('/api/scan/result/:scanId', (req, res) => {
-  const { scanId } = req.params;
-  const pollStartTime = Date.now();
-  
-  console.log(`📊 Poll request for scan: ${scanId}`);
-  
-  const result = scanResults.get(scanId);
-  
-  // Return "not_found" status instead of 404 - helps extension handle gracefully
-  if (!result) {
-    console.log(`⚠️ Scan ${scanId} not found in cache (not ready yet)`);
-    return res.json({ 
-      status: 'not_found',
-      scanId,
-      message: 'Scan entry not yet in cache (too early)',
-      responseTimeMs: Date.now() - pollStartTime
+    
+    res.json({
+      total: result.rows.length,
+      scans: result.rows
     });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
   }
-  
-  // Still processing - return current status
-  if (!result.completed) {
-    const status = result.status || 'in_progress';
-    console.log(`⏳ Scan ${scanId} still ${status}`);
-    return res.json({
-      status: status,
-      scanId,
-      message: result.message || 'Scan in progress',
-      updatedAt: result.updatedAt,
-      responseTimeMs: Date.now() - pollStartTime
-    });
-  }
-  
-  if (result.error) {
-    console.log(`❌ Scan ${scanId} errored: ${result.error}`);
-    return res.json({
-      status: 'error',
-      scanId,
-      error: result.error,
-      verdict: result.verdict || 'ALLOW',
-      score: result.score || 100,
-      riskLevel: result.riskLevel || 'SAFE',
-      responseTimeMs: Date.now() - pollStartTime
-    });
-  }
-  
-  const responseTime = Date.now() - pollStartTime;
-  console.log(`✅ Returning completed scan ${scanId} (response time: ${responseTime}ms)`);
-  res.json({
-    status: 'completed',
-    scanId,
-    ...result,
-    responseTimeMs: responseTime
-  });
 });
 
-/**
- * Health check endpoint
- */
-app.get('/api/health', (req, res) => {
-  res.json({
-    status: 'ok',
-    timestamp: new Date().toISOString(),
-    uptime: process.uptime(),
-    version: '2.0.0'
-  });
-});
-
-// Scan history (public - no auth required)
-app.get('/api/scans', (req, res) => {
-  const limit = req.query.limit || 50;
-  
-  db.all(
-    'SELECT id, url, status, created_at, scan_result FROM scans ORDER BY created_at DESC LIMIT ?',
-    [limit],
-    (err, rows) => {
-      if (err) {
-        return res.status(500).json({ error: 'Failed to fetch scans' });
-      }
-      
-      // Parse JSON results and extract score
-      const scans = rows.map(row => {
-        const result = row.scan_result ? JSON.parse(row.scan_result) : null;
-        return {
-          id: row.id,
-          url: row.url,
-          status: row.status,
-          created_at: row.created_at,
-          score: result ? result.percentage : 0,
-          overallStatus: result ? result.overallStatus : 'unknown',
-          scan_result: result
-        };
-      });
-      
-      res.json(scans);
+// Get specific scan
+app.get('/api/scans/:scanId', async (req, res) => {
+  try {
+    const { scanId } = req.params;
+    
+    const result = await pool.query(
+      'SELECT * FROM scans WHERE id = $1',
+      [scanId]
+    );
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Scan not found' });
     }
-  );
+    
+    res.json(result.rows[0]);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
 });
 
-// Get specific scan details (public)
-app.get('/api/scans/:scanId', (req, res) => {
-  const { scanId } = req.params;
-  
-  db.get(
-    'SELECT id, url, status, created_at, scan_result FROM scans WHERE id = ?',
-    [scanId],
-    (err, row) => {
-      if (err || !row) {
-        return res.status(404).json({ error: 'Scan not found' });
+// Model information
+app.get('/api/model/info', async (req, res) => {
+  try {
+    const info = await MLService.getModelInfo();
+    
+    // Add performance metrics from database
+    const performance = await pool.query(
+      'SELECT * FROM model_performance ORDER BY timestamp DESC LIMIT 5'
+    );
+    
+    res.json({
+      models: info,
+      performance: performance.rows,
+      feature_extractors: {
+        url: '65+ features',
+        file: 'coming_soon'
+      },
+      training_data: {
+        url: 'phishing + benign URLs',
+        file: 'EMBER dataset recommended'
       }
-      
-      const result = row.scan_result ? JSON.parse(row.scan_result) : null;
-      
-      res.json({
-        id: row.id,
-        url: row.url,
-        status: row.status,
-        created_at: row.created_at,
-        score: result ? result.percentage : 0,
-        overallStatus: result ? result.overallStatus : 'unknown',
-        scan_result: result
-      });
-    }
-  );
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
 });
 
-// Real-time scan endpoint (from extension)
-app.post('/api/scan/realtime', verifyExtensionToken, async (req, res) => {
-  const { url, source } = req.body;
+// Test endpoint for feature extraction
+app.post('/api/debug/features', async (req, res) => {
+  const { url } = req.body;
   
   if (!url) {
     return res.status(400).json({ error: 'URL is required' });
   }
   
-  const scanId = crypto.randomUUID();
-  
-  console.log(`\n🔍 Extension scan ${scanId} for: ${url}`);
-  
-  // Store extension scan
-  db.run(
-    'INSERT INTO scans (id, user_id, url, status) VALUES (?, ?, ?, ?)',
-    [scanId, req.userId, url, 'pending'],
-    (err) => {
-      if (err) console.error('Failed to log extension scan:', err);
-    }
-  );
-  
-  const results = {
-    scanId,
-    url,
-    timestamp: new Date().toISOString(),
-    source: 'extension'
-  };
-  
   try {
-    // Quick analysis for extension (with timeouts)
-    const timeout = (promise, ms) => Promise.race([
-      promise,
-      new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), ms))
-    ]);
+    const features = URLFeatureExtractor.extractFeatures(url);
     
-    const [virusTotal, abuseIPDB] = await Promise.allSettled([
-      timeout(scanWithVirusTotal(url), 2500),
-      timeout(checkWithAbuseIPDB(url), 3000)
-    ]);
-    
-    results.virusTotal = virusTotal.status === 'fulfilled' ? virusTotal.value : { error: 'Timeout' };
-    results.abuseIPDB = abuseIPDB.status === 'fulfilled' ? abuseIPDB.value : { error: 'Timeout' };
-    
-    // Calculate quick risk score
-    let riskScore = 50; // Neutral
-    
-    if (results.virusTotal.malicious > 0) riskScore -= 25;
-    if (results.virusTotal.suspicious > 0) riskScore -= 10;
-    if (results.abuseIPDB.abuseConfidenceScore > 50) riskScore -= 15;
-    
-    results.riskScore = Math.max(0, Math.min(100, riskScore));
-    results.verdict = riskScore < 30 ? 'BLOCK' : riskScore < 60 ? 'WARN' : 'ALLOW';
-    
-    // Store result
-    db.run(
-      'UPDATE scans SET status = ?, scan_result = ? WHERE id = ?',
-      ['completed', JSON.stringify(results), scanId],
-      (err) => {
-        if (err) console.error('Failed to save extension scan:', err);
+    res.json({
+      url: url,
+      feature_count: Object.keys(features).length,
+      features: features,
+      sample_features: {
+        url_length: features.url_length,
+        digit_ratio: features.digit_ratio,
+        entropy: features.url_entropy,
+        suspicious_tld: features.is_suspicious_tld,
+        has_ip: features.has_ip_address
       }
-    );
-    
-    res.json(results);
+    });
   } catch (error) {
-    console.error('Extension scan error:', error);
-    db.run('UPDATE scans SET status = ? WHERE id = ?', ['failed', scanId]);
-    res.status(500).json({ error: 'Scan failed', scanId, verdict: 'ALLOW' });
+    res.status(500).json({ error: error.message });
   }
 });
 
-// Health check endpoint
-app.get('/api/health', (req, res) => {
-  res.json({ 
-    status: 'ok', 
-    timestamp: new Date().toISOString(),
-    hasVirusTotalKey: !!process.env.VIRUSTOTAL_API_KEY,
-    hasAbuseIPDBKey: !!process.env.ABUSEIPDB_API_KEY,
-    hasWhoisKey: !!process.env.WHOIS_API_KEY,
-    rulesCount: rulesManager.count(),
-    database: 'connected',
-    heuristicsCount: (heuristicsManager.getAll().rules || []).length
-  });
-});
+// ========== HELPER FUNCTIONS ==========
 
-// Rules management endpoints (basic)
-app.get('/api/rules', (req, res) => {
-  res.json({ status: 'ok', rules: rulesManager.getAll() });
-});
+function combineScores(mlResult, heuristicResult) {
+  // Weighted combination of ML and heuristic scores
+  const mlWeight = 0.7;
+  const heuristicWeight = 0.3;
+  
+  const mlScore = mlResult.is_malicious ? 
+    (mlResult.confidence * 100) : 
+    ((1 - mlResult.confidence) * 100);
+  
+  const heuristicScore = heuristicResult.score || 50;
+  
+  return (mlScore * mlWeight) + (heuristicScore * heuristicWeight);
+}
 
-// Heuristics listing for review
-app.get('/api/heuristics', (req, res) => {
-  res.json({ status: 'ok', heuristics: heuristicsManager.getAll() });
-});
+function determineVerdict(riskScore, confidence) {
+  if (riskScore >= 70 && confidence > 0.8) return 'BLOCK';
+  if (riskScore >= 40 && confidence > 0.6) return 'WARN';
+  if (riskScore < 20 || confidence < 0.4) return 'ALLOW';
+  return 'WARN'; // Default to warn if uncertain
+}
 
-// Heuristics validation (checks for duplicates / unknown condition keys)
-app.get('/api/heuristics/validate', (req, res) => {
+function generateRecommendations(verdict, mlResult, heuristicResult) {
+  const recommendations = [];
+  
+  if (verdict === 'BLOCK') {
+    recommendations.push('Do not visit this URL');
+    recommendations.push('Report as phishing if appropriate');
+    
+    if (mlResult.top_features && Object.keys(mlResult.top_features).length > 0) {
+      const topFeature = Object.keys(mlResult.top_features)[0];
+      recommendations.push(`Top risk factor: ${topFeature}`);
+    }
+  } else if (verdict === 'WARN') {
+    recommendations.push('Exercise caution when visiting');
+    recommendations.push('Verify the website authenticity');
+    recommendations.push('Check for HTTPS encryption');
+  } else {
+    recommendations.push('URL appears safe');
+    recommendations.push('Standard browsing precautions apply');
+  }
+  
+  return recommendations;
+}
+
+async function storeScanInDatabase(scanData) {
   try {
-    const problems = heuristicsManager.validate();
-    res.json({ status: 'ok', problems });
-  } catch (err) {
-    res.status(500).json({ status: 'error', error: err.message });
+    await pool.query(
+      `INSERT INTO scans (id, url, verdict, confidence, features, model_used, analysis_time_ms) 
+       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      [
+        scanData.scan_id,
+        scanData.url,
+        scanData.verdict,
+        scanData.confidence,
+        JSON.stringify(scanData.detailed_analysis),
+        scanData.model_used,
+        scanData.analysis_time_ms
+      ]
+    );
+  } catch (error) {
+    console.error('Failed to store scan in database:', error);
   }
-});
+}
 
-app.post('/api/rules/reload', (req, res) => {
-  try {
-    rulesManager.load();
-    res.json({ status: 'ok', count: rulesManager.count() });
-  } catch (err) {
-    res.status(500).json({ status: 'error', error: err.message });
-  }
-});
-
-app.listen(PORT, () => {
+// ========== START SERVER ==========
+app.listen(PORT, async () => {
   console.log(`
-╔═══════════════════════════════════════════════════════════╗
-║                                                           ║
-║   🛡️  Guardian Link Backend Server v2.0                   ║
-║                                                           ║
-║   Server running on: http://localhost:${PORT}               ║
-║                                                           ║
-║   Endpoints:                                              ║
-║   - POST /api/extension/register     - Register extension ║
-║   - GET  /api/extension/verify       - Verify connection  ║
-║   - POST /api/scan                   - Scan URL (website) ║
-║   - POST /api/scan/realtime          - Scan (extension)   ║
-║   - GET  /api/scans                  - Get scan history   ║
-║   - GET  /api/health                 - Check status       ║
-║                                                           ║
-╚═══════════════════════════════════════════════════════════╝
+╔══════════════════════════════════════════════════════════════╗
+║                                                              ║
+║   🔐 SecureSight AI - Server-Based Malware Detection        ║
+║                                                              ║
+║   Server running on: http://localhost:${PORT}                  ║
+║                                                              ║
+║   Endpoints:                                                 ║
+║   - POST /api/scan/url        - Scan URL with AI            ║
+║   - POST /api/scan/file       - Scan file (coming soon)     ║
+║   - POST /api/scan/bulk       - Bulk URL scan               ║
+║   - GET  /api/scans           - Scan history                ║
+║   - GET  /api/model/info      - Model information           ║
+║   - GET  /api/health          - Health check                ║
+║   - POST /api/debug/features  - Debug feature extraction    ║
+║                                                              ║
+╚══════════════════════════════════════════════════════════════╝
   `);
   
-  console.log('API Keys configured:');
-  console.log(`  VirusTotal: ${process.env.VIRUSTOTAL_API_KEY ? '✓' : '✗'}`);
-  console.log(`  AbuseIPDB:  ${process.env.ABUSEIPDB_API_KEY ? '✓' : '✗'}`);
-  console.log('  JWT Auth:   ✓');
-  console.log('  Database:   ✓');
-  console.log('');
+  // Initialize ML service
+  console.log('🤖 Initializing AI engine...');
+  const mlInitialized = await MLService.initialize();
   
-  // Debug env variables
-  if (!process.env.VIRUSTOTAL_API_KEY) {
-    console.warn('⚠️ WARNING: VIRUSTOTAL_API_KEY not loaded from .env');
-    console.warn(`   __dirname: ${__dirname}`);
-    console.log('   NODE_ENV:', process.env.NODE_ENV);
+  if (mlInitialized) {
+    console.log('✅ AI engine ready for inference');
+    console.log('📊 Feature extractor: 65+ URL features');
+    console.log('🧠 ML Model: Random Forest classifier');
+  } else {
+    console.log('⚠️ AI engine in fallback mode (using heuristics)');
   }
-  if (!process.env.ABUSEIPDB_API_KEY) {
-    console.warn('⚠️ WARNING: ABUSEIPDB_API_KEY not loaded from .env');
-  }
+  
+  console.log(`📁 Database: ${process.env.DATABASE_URL ? 'Connected' : 'Local'}`);
+  console.log('\n🚀 Ready to accept scan requests!');
 });
