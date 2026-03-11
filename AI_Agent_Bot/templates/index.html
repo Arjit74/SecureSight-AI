@@ -3,20 +3,255 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>EnkiScanAI - Security Analysis</title>
+    <title>SecureSight AI - Security Analysis</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/app.css') }}" />
+    <link href="https://unpkg.com/aos@2.3.1/dist/aos.css" rel="stylesheet">
+    <style>
+      /* Futuristic 3D Animated Background */
+      .animated-bg {
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        z-index: -2;
+        pointer-events: none;
+        overflow: hidden;
+        background: radial-gradient(ellipse at top, #1a1a2e 0%, #0f0f1e 100%);
+      }
+
+      .animated-bg::before {
+        content: '';
+        position: absolute;
+        width: 200%;
+        height: 200%;
+        background: radial-gradient(circle at 30% 50%, rgba(102, 126, 234, 0.15) 0%, transparent 50%),
+                    radial-gradient(circle at 70% 50%, rgba(240, 147, 251, 0.15) 0%, transparent 50%);
+        animation: rotate-bg 30s linear infinite;
+      }
+
+      .animated-bg::after {
+        content: '';
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        background-image: 
+          repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(102, 126, 234, 0.03) 2px, rgba(102, 126, 234, 0.03) 4px),
+          repeating-linear-gradient(90deg, transparent, transparent 2px, rgba(102, 126, 234, 0.03) 2px, rgba(102, 126, 234, 0.03) 4px);
+        background-size: 50px 50px;
+        animation: grid-move 20s linear infinite;
+      }
+
+      @keyframes rotate-bg {
+        0% { transform: rotate(0deg); }
+        100% { transform: rotate(360deg); }
+      }
+
+      @keyframes grid-move {
+        0% { transform: translate(0, 0); }
+        100% { transform: translate(50px, 50px); }
+      }
+
+      /* Floating 3D Cards */
+      .floating-card {
+        position: fixed;
+        z-index: 0;
+        pointer-events: none;
+        opacity: 0.15;
+        animation: float-card 20s ease-in-out infinite;
+      }
+
+      .floating-card-1 {
+        top: 10%;
+        right: 5%;
+        width: 200px;
+        height: 200px;
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        border-radius: 20px;
+        transform: perspective(1000px) rotateY(20deg) rotateX(10deg);
+        animation-delay: 0s;
+      }
+
+      .floating-card-2 {
+        top: 60%;
+        left: 5%;
+        width: 150px;
+        height: 150px;
+        background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+        border-radius: 15px;
+        transform: perspective(1000px) rotateY(-20deg) rotateX(-10deg);
+        animation-delay: 5s;
+      }
+
+      .floating-card-3 {
+        top: 30%;
+        left: 15%;
+        width: 180px;
+        height: 180px;
+        background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+        border-radius: 18px;
+        transform: perspective(1000px) rotateY(15deg) rotateX(-15deg);
+        animation-delay: 10s;
+      }
+
+      @keyframes float-card {
+        0%, 100% {
+          transform: perspective(1000px) rotateY(20deg) rotateX(10deg) translateY(0);
+        }
+        50% {
+          transform: perspective(1000px) rotateY(-20deg) rotateX(-10deg) translateY(-30px);
+        }
+      }
+
+      /* Interactive 3D Models Section */
+      .model-showcase {
+        width: 100%;
+        height: 450px;
+        margin: 40px 0;
+        border-radius: 25px;
+        overflow: hidden;
+        box-shadow: 0 30px 80px rgba(0, 0, 0, 0.4);
+        background: linear-gradient(135deg, #1e1e2e 0%, #2d2d44 100%);
+        border: 2px solid rgba(102, 126, 234, 0.3);
+        position: relative;
+        transition: all 0.5s cubic-bezier(0.4, 0, 0.2, 1);
+      }
+
+      .model-showcase:hover {
+        transform: translateY(-10px) scale(1.02);
+        box-shadow: 0 40px 100px rgba(102, 126, 234, 0.4);
+        border-color: rgba(102, 126, 234, 0.6);
+      }
+
+      .model-showcase::before {
+        content: '';
+        position: absolute;
+        top: -2px;
+        left: -2px;
+        right: -2px;
+        bottom: -2px;
+        background: linear-gradient(45deg, #667eea, #764ba2, #f093fb, #f5576c);
+        border-radius: 25px;
+        z-index: -1;
+        opacity: 0;
+        transition: opacity 0.5s ease;
+        animation: border-glow 3s ease-in-out infinite;
+      }
+
+      .model-showcase:hover::before {
+        opacity: 0.4;
+      }
+
+      @keyframes border-glow {
+        0%, 100% { filter: blur(10px); }
+        50% { filter: blur(20px); }
+      }
+
+      .model-showcase canvas,
+      .model-showcase iframe,
+      .model-placeholder {
+        width: 100%;
+        height: 100%;
+        border: none;
+      }
+
+      .model-placeholder {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        flex-direction: column;
+        gap: 20px;
+        color: rgba(255, 255, 255, 0.8);
+        font-size: 18px;
+        font-weight: 600;
+      }
+
+      .model-placeholder .icon {
+        font-size: 80px;
+        animation: pulse-icon 2s ease-in-out infinite;
+      }
+
+      @keyframes pulse-icon {
+        0%, 100% {
+          transform: scale(1);
+          opacity: 0.8;
+        }
+        50% {
+          transform: scale(1.1);
+          opacity: 1;
+        }
+      }
+
+      /* User Info Badge - Fixed Alignment */
+      .user-badge {
+        background: linear-gradient(135deg, var(--accent), var(--accent-2));
+        color: white;
+        padding: 10px 18px;
+        border-radius: 25px;
+        font-size: 14px;
+        font-weight: 600;
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        box-shadow: 0 8px 20px rgba(0, 0, 0, 0.2);
+        white-space: nowrap;
+      }
+
+      /* Holographic effect */
+      .holographic {
+        position: relative;
+        overflow: hidden;
+      }
+
+      .holographic::after {
+        content: '';
+        position: absolute;
+        top: -50%;
+        left: -50%;
+        width: 200%;
+        height: 200%;
+        background: linear-gradient(
+          45deg,
+          transparent 30%,
+          rgba(255, 255, 255, 0.1) 50%,
+          transparent 70%
+        );
+        animation: holographic-shine 3s ease-in-out infinite;
+      }
+
+      @keyframes holographic-shine {
+        0% { transform: translateX(-100%) translateY(-100%) rotate(45deg); }
+        100% { transform: translateX(100%) translateY(100%) rotate(45deg); }
+      }
+    </style>
   </head>
   <body>
+    <div class="animated-bg"></div>
+    
+    <!-- Floating 3D Cards -->
+    <div class="floating-card floating-card-1"></div>
+    <div class="floating-card floating-card-2"></div>
+    <div class="floating-card floating-card-3"></div>
+
     <div class="wrap">
-      <header>
+      <header data-aos="fade-down" class="holographic">
         <div class="brand">
           <div class="logo"></div>
           <div>
-            <h1>EnkiScanAI</h1>
-            <div class="sub">AI-Powered Security Analysis Dashboard</div>
+            <h1>SecureSight AI</h1>
+            <div class="sub">🤖 AI-Powered Security Analysis Dashboard</div>
           </div>
         </div>
         <div class="controls">
+          <div class="user-badge">
+            <span>👤</span>
+            <span>{{ username }}</span>
+          </div>
+          {% if is_admin %}
+          <button class="btn" onclick="location.href='/admin'" title="Admin Panel">👨‍💼 Admin</button>
+          {% endif %}
           <div class="pill" id="status"><span class="dot"></span>Live sync</div>
           <div class="pill" id="clock">Live · 00:00:00</div>
           <div class="reload-control">
@@ -28,34 +263,35 @@
           <button class="btn" id="themeToggle" title="Toggle theme">🌙 Dark</button>
           <button class="btn" id="refreshBtn" title="Refresh data">🔄</button>
           <button class="btn" id="toggleBtn">Pause live</button>
+          <button class="btn" onclick="location.href='/logout'" title="Logout" style="background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%); color: white; border: none;">🚪 Logout</button>
         </div>
       </header>
 
       <!-- Statistics Dashboard -->
-      <div class="hero">
-        <div class="stat">
+      <div class="hero" data-aos="fade-up" data-aos-delay="100">
+        <div class="stat" data-aos="zoom-in" data-aos-delay="200">
           <div class="stat-label">Total Files Analyzed</div>
           <div class="stat-value" id="stat-total">{{ items|length }}</div>
           <div class="stat-meta">All time</div>
         </div>
-        <div class="stat">
+        <div class="stat" data-aos="zoom-in" data-aos-delay="300">
           <div class="stat-label">Safe Files</div>
           <div class="stat-value" style="color: #2e7d32;" id="stat-safe">0</div>
           <div class="stat-meta">Low risk detected</div>
         </div>
-        <div class="stat">
+        <div class="stat" data-aos="zoom-in" data-aos-delay="400">
           <div class="stat-label">Threats Detected</div>
           <div class="stat-value" style="color: #c62828;" id="stat-threats">0</div>
           <div class="stat-meta">High/Medium risk</div>
         </div>
-        <div class="stat">
+        <div class="stat" data-aos="zoom-in" data-aos-delay="500">
           <div class="stat-label">Currently Analyzing</div>
           <div class="stat-value" style="color: var(--accent-2);" id="stat-analyzing">0</div>
           <div class="stat-meta">In progress</div>
         </div>
       </div>
 
-      <div class="layout section active" id="tab-feed">
+      <div class="layout section active" id="tab-feed" data-aos="fade-up" data-aos-delay="600">
         <section class="panel">
           <h2>Analysis Feed</h2>
           
@@ -130,7 +366,7 @@
         </section>
       </div>
 
-      <div class="upload-section" id="uploadSection">
+      <div class="upload-section" id="uploadSection" data-aos="fade-up" data-aos-delay="700">
         <div class="upload-container">
           <div class="upload-title">Upload File for Analysis</div>
           <div class="dropzone" id="dropzone">
@@ -146,6 +382,34 @@
             <div class="progress-text" id="progressText">Uploading and analyzing...</div>
           </div>
           <div class="upload-status" id="uploadStatus"></div>
+        </div>
+      </div>
+
+      <!-- Interactive 3D Models Section -->
+      <div data-aos="fade-up" data-aos-delay="800" style="margin: 50px 0;">
+        <h2 style="text-align: center; font-size: 32px; margin-bottom: 30px; color: var(--ink); background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;">🛡️ Interactive Security Visualization</h2>
+        <div class="model-showcase">
+          <div class="model-placeholder">
+            <div class="icon">🔐</div>
+            <div>Advanced AI Security Analysis</div>
+            <canvas id="securityViz" style="width: 100%; height: 100%;"></canvas>
+          </div>
+        </div>
+      </div>
+
+      <!-- Cyber Security Network -->
+      <div data-aos="fade-up" data-aos-delay="900" style="margin: 50px 0;">
+        <h2 style="text-align: center; font-size: 32px; margin-bottom: 30px; color: var(--ink); background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;">🌐 Real-time Threat Network</h2>
+        <div class="model-showcase">
+          <canvas id="networkViz" style="width: 100%; height: 100%;"></canvas>
+        </div>
+      </div>
+
+      <!-- Data Flow Visualization -->
+      <div data-aos="fade-up" data-aos-delay="1000" style="margin: 50px 0;">
+        <h2 style="text-align: center; font-size: 32px; margin-bottom: 30px; color: var(--ink); background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;">📊 Live Data Processing</h2>
+        <div class="model-showcase">
+          <canvas id="dataFlowViz" style="width: 100%; height: 100%;"></canvas>
         </div>
       </div>
     </div>
@@ -176,8 +440,232 @@
       <div id="toastMessage" style="font-size: 14px; color: var(--ink);"></div>
     </div>
 
+    <script src="https://unpkg.com/aos@2.3.1/dist/aos.js"></script>
     <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/animations.js') }}"></script>
     <script>
+      // Initialize AOS (Animate On Scroll)
+      AOS.init({
+        duration: 800,
+        easing: 'ease-out-cubic',
+        once: true,
+        offset: 100
+      });
+
+      // Interactive Canvas Visualizations
+      
+      // Security Visualization
+      const securityCanvas = document.getElementById('securityViz');
+      if (securityCanvas) {
+        const ctx = securityCanvas.getContext('2d');
+        securityCanvas.width = securityCanvas.offsetWidth;
+        securityCanvas.height = securityCanvas.offsetHeight;
+        
+        const particles = [];
+        const particleCount = 50;
+        
+        class SecurityParticle {
+          constructor() {
+            this.reset();
+          }
+          
+          reset() {
+            this.x = Math.random() * securityCanvas.width;
+            this.y = Math.random() * securityCanvas.height;
+            this.vx = (Math.random() - 0.5) * 2;
+            this.vy = (Math.random() - 0.5) * 2;
+            this.size = Math.random() * 3 + 1;
+            this.color = `hsl(${Math.random() * 60 + 240}, 70%, 60%)`;
+          }
+          
+          update() {
+            this.x += this.vx;
+            this.y += this.vy;
+            
+            if (this.x < 0 || this.x > securityCanvas.width) this.vx *= -1;
+            if (this.y < 0 || this.y > securityCanvas.height) this.vy *= -1;
+          }
+          
+          draw() {
+            ctx.beginPath();
+            ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2);
+            ctx.fillStyle = this.color;
+            ctx.fill();
+          }
+        }
+        
+        for (let i = 0; i < particleCount; i++) {
+          particles.push(new SecurityParticle());
+        }
+        
+        function animateSecurityViz() {
+          ctx.fillStyle = 'rgba(30, 30, 46, 0.1)';
+          ctx.fillRect(0, 0, securityCanvas.width, securityCanvas.height);
+          
+          particles.forEach(p => {
+            p.update();
+            p.draw();
+            
+            particles.forEach(p2 => {
+              const dx = p.x - p2.x;
+              const dy = p.y - p2.y;
+              const dist = Math.sqrt(dx * dx + dy * dy);
+              
+              if (dist < 100) {
+                ctx.beginPath();
+                ctx.strokeStyle = `rgba(102, 126, 234, ${1 - dist / 100})`;
+                ctx.lineWidth = 0.5;
+                ctx.moveTo(p.x, p.y);
+                ctx.lineTo(p2.x, p2.y);
+                ctx.stroke();
+              }
+            });
+          });
+          
+          requestAnimationFrame(animateSecurityViz);
+        }
+        animateSecurityViz();
+      }
+
+      // Network Visualization
+      const networkCanvas = document.getElementById('networkViz');
+      if (networkCanvas) {
+        const ctx2 = networkCanvas.getContext('2d');
+        networkCanvas.width = networkCanvas.offsetWidth;
+        networkCanvas.height = networkCanvas.offsetHeight;
+        
+        const nodes = [];
+        const nodeCount = 30;
+        
+        class NetworkNode {
+          constructor() {
+            this.x = Math.random() * networkCanvas.width;
+            this.y = Math.random() * networkCanvas.height;
+            this.vx = (Math.random() - 0.5) * 1;
+            this.vy = (Math.random() - 0.5) * 1;
+            this.size = Math.random() * 6 + 3;
+            this.pulse = Math.random() * Math.PI * 2;
+            this.color = Math.random() > 0.8 ? '#f5576c' : '#667eea';
+          }
+          
+          update() {
+            this.x += this.vx;
+            this.y += this.vy;
+            this.pulse += 0.05;
+            
+            if (this.x < 0 || this.x > networkCanvas.width) this.vx *= -1;
+            if (this.y < 0 || this.y > networkCanvas.height) this.vy *= -1;
+          }
+          
+          draw() {
+            ctx2.beginPath();
+            ctx2.arc(this.x, this.y, this.size + Math.sin(this.pulse) * 2, 0, Math.PI * 2);
+            ctx2.fillStyle = this.color;
+            ctx2.fill();
+            ctx2.strokeStyle = 'rgba(255, 255, 255, 0.5)';
+            ctx2.lineWidth = 2;
+            ctx2.stroke();
+          }
+        }
+        
+        for (let i = 0; i < nodeCount; i++) {
+          nodes.push(new NetworkNode());
+        }
+        
+        function animateNetworkViz() {
+          ctx2.fillStyle = 'rgba(30, 30, 46, 0.1)';
+          ctx2.fillRect(0, 0, networkCanvas.width, networkCanvas.height);
+          
+          nodes.forEach((n, i) => {
+            n.update();
+            n.draw();
+            
+            nodes.forEach((n2, j) => {
+              if (i !== j) {
+                const dx = n.x - n2.x;
+                const dy = n.y - n2.y;
+                const dist = Math.sqrt(dx * dx + dy * dy);
+                
+                if (dist < 150) {
+                  ctx2.beginPath();
+                  ctx2.strokeStyle = `rgba(240, 147, 251, ${0.3 - dist / 500})`;
+                  ctx2.lineWidth = 1;
+                  ctx2.moveTo(n.x, n.y);
+                  ctx2.lineTo(n2.x, n2.y);
+                  ctx2.stroke();
+                }
+              }
+            });
+          });
+          
+          requestAnimationFrame(animateNetworkViz);
+        }
+        animateNetworkViz();
+      }
+
+      // Data Flow Visualization
+      const dataFlowCanvas = document.getElementById('dataFlowViz');
+      if (dataFlowCanvas) {
+        const ctx3 = dataFlowCanvas.getContext('2d');
+        dataFlowCanvas.width = dataFlowCanvas.offsetWidth;
+        dataFlowCanvas.height = dataFlowCanvas.offsetHeight;
+        
+        const dataPackets = [];
+        
+        class DataPacket {
+          constructor() {
+            this.x = Math.random() * dataFlowCanvas.width;
+            this.y = -20;
+            this.speed = Math.random() * 3 + 1;
+            this.size = Math.random() * 8 + 4;
+            this.hue = Math.random() * 60 + 180;
+          }
+          
+          update() {
+            this.y += this.speed;
+            if (this.y > dataFlowCanvas.height + 20) {
+              this.y = -20;
+              this.x = Math.random() * dataFlowCanvas.width;
+            }
+          }
+          
+          draw() {
+            ctx3.save();
+            ctx3.translate(this.x, this.y);
+            
+            // Draw packet
+            ctx3.fillStyle = `hsl(${this.hue}, 70%, 60%)`;
+            ctx3.fillRect(-this.size / 2, -this.size / 2, this.size, this.size);
+            
+            // Draw trail
+            const gradient = ctx3.createLinearGradient(0, 0, 0, -50);
+            gradient.addColorStop(0, `hsla(${this.hue}, 70%, 60%, 0.8)`);
+            gradient.addColorStop(1, `hsla(${this.hue}, 70%, 60%, 0)`);
+            ctx3.fillStyle = gradient;
+            ctx3.fillRect(-this.size / 4, -50, this.size / 2, 50);
+            
+            ctx3.restore();
+          }
+        }
+        
+        for (let i = 0; i < 40; i++) {
+          dataPackets.push(new DataPacket());
+        }
+        
+        function animateDataFlowViz() {
+          ctx3.fillStyle = 'rgba(30, 30, 46, 0.15)';
+          ctx3.fillRect(0, 0, dataFlowCanvas.width, dataFlowCanvas.height);
+          
+          dataPackets.forEach(p => {
+            p.update();
+            p.draw();
+          });
+          
+          requestAnimationFrame(animateDataFlowViz);
+        }
+        animateDataFlowViz();
+      }
+
       // Auto-reload when analysis completes (7 second check interval)
       let autoReloadInterval = null;
       let reloadScheduled = false;
