@@ -10,12 +10,15 @@ import requests
 import hashlib
 import mimetypes
 import uuid
+from functools import wraps
 from dotenv import load_dotenv
-from flask import Flask, jsonify, render_template, request, send_from_directory, Response
+from flask import Flask, jsonify, render_template, request, send_from_directory, Response, session, redirect, url_for, flash
 from werkzeug.utils import secure_filename
+from werkzeug.security import generate_password_hash, check_password_hash
 
 load_dotenv()
 app = Flask(__name__)
+app.secret_key = os.environ.get("SECRET_KEY", "your-secret-key-change-in-production-12345")
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 UPLOAD_DIR = os.path.join(BASE_DIR, "uploads")
@@ -23,10 +26,35 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 received_items = []   # use DB in real project
 
+# Simple user database (use real database in production)
+users = {
+    "admin": generate_password_hash("admin123"),
+    "user": generate_password_hash("user123")
+}
+
 VT_API_KEY = os.environ.get("VT_API_KEY")
 VT_BASE_URL = "https://www.virustotal.com/api/v3"
 VT_CHECK_INTERVAL_SEC = 20
 URL_REGEX = re.compile(r"https?://\S+", re.IGNORECASE)
+
+
+# Authentication decorator
+def login_required(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if 'username' not in session:
+            return redirect(url_for('login'))
+        return f(*args, **kwargs)
+    return decorated_function
+
+
+def admin_required(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if 'username' not in session or session.get('username') != 'admin':
+            return redirect(url_for('index'))
+        return f(*args, **kwargs)
+    return decorated_function
 
 
 def _calculate_file_hashes(file_path):
@@ -533,15 +561,58 @@ def suggest():
     return jsonify({"suggestions": suggestions[:8]})
 
 
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    if request.method == "POST":
+        username = request.form.get("username")
+        password = request.form.get("password")
+        
+        if username in users and check_password_hash(users[username], password):
+            session['username'] = username
+            session['is_admin'] = (username == 'admin')
+            return redirect(url_for('index'))
+        else:
+            flash("Invalid credentials", "error")
+            return render_template("login.html", error="Invalid username or password")
+    
+    # If already logged in, redirect to index
+    if 'username' in session:
+        return redirect(url_for('index'))
+    
+    return render_template("login.html")
+
+
+@app.route("/logout")
+def logout():
+    session.clear()
+    return redirect(url_for('login'))
+
+
+@app.route("/admin")
+@admin_required
+def admin_panel():
+    stats = {
+        'total_items': len(received_items),
+        'total_files': len([i for i in received_items if i.get('file_name')]),
+        'total_urls': len([i for i in received_items if i.get('urls')]),
+        'threats_detected': len([i for i in received_items if i.get('vt_stats', {}).get('malicious', 0) > 0]),
+        'safe_files': len([i for i in received_items if i.get('vt_stats', {}).get('malicious', 0) == 0 and i.get('vt_status') == 'completed']),
+        'analyzing': len([i for i in received_items if i.get('vt_status') in ['queued', 'in_progress']])
+    }
+    return render_template("admin.html", stats=stats, items=received_items)
+
+
 @app.route("/")
+@login_required
 def index():
     for item in received_items:
         if item.get("vt_status") in {"queued", "in_progress"}:
             _vt_check_analysis(item)
-    return render_template("index.html", items=received_items, vt_enabled=bool(VT_API_KEY))
+    return render_template("index.html", items=received_items, vt_enabled=bool(VT_API_KEY), username=session.get('username'), is_admin=session.get('is_admin', False))
 
 
 @app.route("/uploads/<path:filename>")
+@login_required
 def uploads(filename):
     return send_from_directory(UPLOAD_DIR, filename, as_attachment=True)
 
