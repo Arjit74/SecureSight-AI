@@ -7,180 +7,176 @@
     <link rel="stylesheet" href="{{ url_for('static', filename='css/app.css') }}" />
     <link href="https://unpkg.com/aos@2.3.1/dist/aos.css" rel="stylesheet">
     <style>
-      /* Futuristic 3D Animated Background */
-      .animated-bg {
+      .dashboard-bg {
+        --mouse-x: 50%;
+        --mouse-y: 50%;
         position: fixed;
-        top: 0;
-        left: 0;
-        width: 100%;
-        height: 100%;
+        inset: 0;
         z-index: -2;
         pointer-events: none;
         overflow: hidden;
-        background: radial-gradient(ellipse at top, #1a1a2e 0%, #0f0f1e 100%);
+        background:
+          radial-gradient(1200px 760px at var(--mouse-x) var(--mouse-y), rgba(79, 172, 254, 0.24) 0%, rgba(79, 172, 254, 0) 62%),
+          radial-gradient(900px 620px at 14% 16%, rgba(240, 147, 251, 0.16) 0%, rgba(240, 147, 251, 0) 58%),
+          radial-gradient(980px 680px at 82% 88%, rgba(102, 126, 234, 0.14) 0%, rgba(102, 126, 234, 0) 63%),
+          linear-gradient(145deg, #090e1d 0%, #111a2d 42%, #0b1325 100%);
       }
 
-      .animated-bg::before {
-        content: '';
+      .dashboard-bg::before {
+        content: "";
         position: absolute;
-        width: 200%;
-        height: 200%;
-        background: radial-gradient(circle at 30% 50%, rgba(102, 126, 234, 0.15) 0%, transparent 50%),
-                    radial-gradient(circle at 70% 50%, rgba(240, 147, 251, 0.15) 0%, transparent 50%);
-        animation: rotate-bg 30s linear infinite;
+        inset: -25%;
+        background-image:
+          linear-gradient(rgba(102, 126, 234, 0.07) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(102, 126, 234, 0.07) 1px, transparent 1px);
+        background-size: 72px 72px;
+        background-position: -36px -36px;
+        opacity: 0.5;
+        transform: translate3d(calc((var(--mouse-x) - 50%) / -10), calc((var(--mouse-y) - 50%) / -10), 0);
+        animation: dashboard-grid-pan 20s linear infinite;
       }
 
-      .animated-bg::after {
-        content: '';
+      .dashboard-bg::after {
+        content: "";
         position: absolute;
-        top: 0;
-        left: 0;
+        inset: -30%;
+        background: conic-gradient(from 90deg at 50% 50%, rgba(102, 126, 234, 0.18), rgba(79, 172, 254, 0), rgba(240, 147, 251, 0.16), rgba(102, 126, 234, 0.18));
+        filter: blur(80px);
+        opacity: 0.45;
+        animation: dashboard-haze-spin 26s linear infinite;
+      }
+
+      @keyframes dashboard-grid-pan {
+        from { background-position: -36px -36px; }
+        to { background-position: 36px 36px; }
+      }
+
+      @keyframes dashboard-haze-spin {
+        from { transform: rotate(0deg); }
+        to { transform: rotate(360deg); }
+      }
+
+      .dashboard-bg-canvas {
+        position: absolute;
+        inset: 0;
         width: 100%;
         height: 100%;
-        background-image: 
-          repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(102, 126, 234, 0.03) 2px, rgba(102, 126, 234, 0.03) 4px),
-          repeating-linear-gradient(90deg, transparent, transparent 2px, rgba(102, 126, 234, 0.03) 2px, rgba(102, 126, 234, 0.03) 4px);
-        background-size: 50px 50px;
-        animation: grid-move 20s linear infinite;
+        opacity: 0.9;
       }
 
-      @keyframes rotate-bg {
-        0% { transform: rotate(0deg); }
-        100% { transform: rotate(360deg); }
+      .dashboard-models {
+        position: absolute;
+        inset: 0;
+        z-index: 2;
       }
 
-      @keyframes grid-move {
-        0% { transform: translate(0, 0); }
-        100% { transform: translate(50px, 50px); }
+      .dashboard-model {
+        position: absolute;
+        transform: translate3d(var(--tx, 0px), var(--ty, 0px), 0) rotate(var(--rz, 0deg));
+        transition: transform 160ms linear, box-shadow 220ms ease;
+        border: 1px solid rgba(180, 212, 255, 0.22);
+        background: linear-gradient(160deg, rgba(15, 32, 65, 0.42), rgba(22, 16, 53, 0.16));
+        box-shadow: 0 24px 44px rgba(7, 12, 26, 0.48), inset 0 1px 0 rgba(255, 255, 255, 0.2);
+        backdrop-filter: blur(10px);
       }
 
-      /* Floating 3D Cards */
-      .floating-card {
-        position: fixed;
-        z-index: 0;
-        pointer-events: none;
-        opacity: 0.15;
-        animation: float-card 20s ease-in-out infinite;
+      .model-core {
+        top: 12%;
+        right: 8%;
+        width: min(320px, 26vw);
+        aspect-ratio: 1;
+        border-radius: 30%;
       }
 
-      .floating-card-1 {
-        top: 10%;
-        right: 5%;
-        width: 200px;
-        height: 200px;
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        border-radius: 20px;
-        transform: perspective(1000px) rotateY(20deg) rotateX(10deg);
-        animation-delay: 0s;
+      .model-core::before,
+      .model-core::after {
+        content: "";
+        position: absolute;
+        inset: 14%;
+        border-radius: 50%;
+        border: 1px solid rgba(88, 209, 255, 0.4);
       }
 
-      .floating-card-2 {
-        top: 60%;
-        left: 5%;
-        width: 150px;
-        height: 150px;
-        background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
-        border-radius: 15px;
-        transform: perspective(1000px) rotateY(-20deg) rotateX(-10deg);
-        animation-delay: 5s;
+      .model-core::after {
+        inset: 28%;
+        border-color: rgba(255, 131, 225, 0.45);
       }
 
-      .floating-card-3 {
-        top: 30%;
-        left: 15%;
-        width: 180px;
-        height: 180px;
-        background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+      .model-ring {
+        left: 8%;
+        bottom: 10%;
+        width: min(360px, 32vw);
+        aspect-ratio: 1;
+        border-radius: 50%;
+        border-style: dashed;
+        border-width: 2px;
+        background: radial-gradient(circle at center, rgba(102, 126, 234, 0.12), rgba(102, 126, 234, 0));
+      }
+
+      .model-panel {
+        width: min(240px, 22vw);
+        height: min(130px, 14vw);
         border-radius: 18px;
-        transform: perspective(1000px) rotateY(15deg) rotateX(-15deg);
-        animation-delay: 10s;
       }
 
-      @keyframes float-card {
-        0%, 100% {
-          transform: perspective(1000px) rotateY(20deg) rotateX(10deg) translateY(0);
+      .model-panel-a {
+        left: 14%;
+        top: 24%;
+      }
+
+      .model-panel-b {
+        right: 22%;
+        bottom: 20%;
+      }
+
+      .model-node {
+        width: 22px;
+        height: 22px;
+        border-radius: 50%;
+        border: 1px solid rgba(255, 255, 255, 0.45);
+        background: radial-gradient(circle at 35% 35%, rgba(255, 255, 255, 0.9), rgba(79, 172, 254, 0.1));
+        box-shadow: 0 0 18px rgba(79, 172, 254, 0.35);
+      }
+
+      .node-a {
+        top: 40%;
+        left: 28%;
+      }
+
+      .node-b {
+        top: 68%;
+        left: 62%;
+      }
+
+      .node-c {
+        top: 18%;
+        left: 56%;
+      }
+
+      @media (max-width: 920px) {
+        .dashboard-model {
+          opacity: 0.72;
         }
-        50% {
-          transform: perspective(1000px) rotateY(-20deg) rotateX(-10deg) translateY(-30px);
+
+        .model-core {
+          width: 220px;
+        }
+
+        .model-ring {
+          width: 220px;
+          left: -30px;
+        }
+
+        .model-panel {
+          width: 180px;
+          height: 96px;
         }
       }
 
-      /* Interactive 3D Models Section */
-      .model-showcase {
-        width: 100%;
-        height: 450px;
-        margin: 40px 0;
-        border-radius: 25px;
-        overflow: hidden;
-        box-shadow: 0 30px 80px rgba(0, 0, 0, 0.4);
-        background: linear-gradient(135deg, #1e1e2e 0%, #2d2d44 100%);
-        border: 2px solid rgba(102, 126, 234, 0.3);
-        position: relative;
-        transition: all 0.5s cubic-bezier(0.4, 0, 0.2, 1);
-      }
-
-      .model-showcase:hover {
-        transform: translateY(-10px) scale(1.02);
-        box-shadow: 0 40px 100px rgba(102, 126, 234, 0.4);
-        border-color: rgba(102, 126, 234, 0.6);
-      }
-
-      .model-showcase::before {
-        content: '';
-        position: absolute;
-        top: -2px;
-        left: -2px;
-        right: -2px;
-        bottom: -2px;
-        background: linear-gradient(45deg, #667eea, #764ba2, #f093fb, #f5576c);
-        border-radius: 25px;
-        z-index: -1;
-        opacity: 0;
-        transition: opacity 0.5s ease;
-        animation: border-glow 3s ease-in-out infinite;
-      }
-
-      .model-showcase:hover::before {
-        opacity: 0.4;
-      }
-
-      @keyframes border-glow {
-        0%, 100% { filter: blur(10px); }
-        50% { filter: blur(20px); }
-      }
-
-      .model-showcase canvas,
-      .model-showcase iframe,
-      .model-placeholder {
-        width: 100%;
-        height: 100%;
-        border: none;
-      }
-
-      .model-placeholder {
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        flex-direction: column;
-        gap: 20px;
-        color: rgba(255, 255, 255, 0.8);
-        font-size: 18px;
-        font-weight: 600;
-      }
-
-      .model-placeholder .icon {
-        font-size: 80px;
-        animation: pulse-icon 2s ease-in-out infinite;
-      }
-
-      @keyframes pulse-icon {
-        0%, 100% {
-          transform: scale(1);
-          opacity: 0.8;
-        }
-        50% {
-          transform: scale(1.1);
-          opacity: 1;
+      @media (max-width: 640px) {
+        .model-panel-b,
+        .node-c {
+          display: none;
         }
       }
 
@@ -228,12 +224,18 @@
     </style>
   </head>
   <body>
-    <div class="animated-bg"></div>
-    
-    <!-- Floating 3D Cards -->
-    <div class="floating-card floating-card-1"></div>
-    <div class="floating-card floating-card-2"></div>
-    <div class="floating-card floating-card-3"></div>
+    <div class="dashboard-bg" id="dashboardBg" aria-hidden="true">
+      <canvas id="dashboardBackgroundCanvas" class="dashboard-bg-canvas"></canvas>
+      <div class="dashboard-models">
+        <div class="dashboard-model model-core" data-depth="0.08"></div>
+        <div class="dashboard-model model-ring" data-depth="0.06"></div>
+        <div class="dashboard-model model-panel model-panel-a" data-depth="0.11"></div>
+        <div class="dashboard-model model-panel model-panel-b" data-depth="0.1"></div>
+        <div class="dashboard-model model-node node-a" data-depth="0.15"></div>
+        <div class="dashboard-model model-node node-b" data-depth="0.14"></div>
+        <div class="dashboard-model model-node node-c" data-depth="0.12"></div>
+      </div>
+    </div>
 
     <div class="wrap">
       <header data-aos="fade-down" class="holographic">
@@ -385,33 +387,6 @@
         </div>
       </div>
 
-      <!-- Interactive 3D Models Section -->
-      <div data-aos="fade-up" data-aos-delay="800" style="margin: 50px 0;">
-        <h2 style="text-align: center; font-size: 32px; margin-bottom: 30px; color: var(--ink); background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;">🛡️ Interactive Security Visualization</h2>
-        <div class="model-showcase">
-          <div class="model-placeholder">
-            <div class="icon">🔐</div>
-            <div>Advanced AI Security Analysis</div>
-            <canvas id="securityViz" style="width: 100%; height: 100%;"></canvas>
-          </div>
-        </div>
-      </div>
-
-      <!-- Cyber Security Network -->
-      <div data-aos="fade-up" data-aos-delay="900" style="margin: 50px 0;">
-        <h2 style="text-align: center; font-size: 32px; margin-bottom: 30px; color: var(--ink); background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;">🌐 Real-time Threat Network</h2>
-        <div class="model-showcase">
-          <canvas id="networkViz" style="width: 100%; height: 100%;"></canvas>
-        </div>
-      </div>
-
-      <!-- Data Flow Visualization -->
-      <div data-aos="fade-up" data-aos-delay="1000" style="margin: 50px 0;">
-        <h2 style="text-align: center; font-size: 32px; margin-bottom: 30px; color: var(--ink); background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;">📊 Live Data Processing</h2>
-        <div class="model-showcase">
-          <canvas id="dataFlowViz" style="width: 100%; height: 100%;"></canvas>
-        </div>
-      </div>
     </div>
 
     <div class="modal" id="modal">
@@ -452,219 +427,168 @@
         offset: 100
       });
 
-      // Interactive Canvas Visualizations
-      
-      // Security Visualization
-      const securityCanvas = document.getElementById('securityViz');
-      if (securityCanvas) {
-        const ctx = securityCanvas.getContext('2d');
-        securityCanvas.width = securityCanvas.offsetWidth;
-        securityCanvas.height = securityCanvas.offsetHeight;
-        
+      // Mouse-reactive dashboard background models
+      (function initDashboardBackground() {
+        const background = document.getElementById('dashboardBg');
+        const canvas = document.getElementById('dashboardBackgroundCanvas');
+        if (!background || !canvas) return;
+
+        const context = canvas.getContext('2d');
+        if (!context) return;
+
+        const models = Array.from(background.querySelectorAll('.dashboard-model'));
+        const isSmallScreen = window.matchMedia('(max-width: 768px)').matches;
+        const particleCount = isSmallScreen ? 34 : 70;
+
+        const pointer = {
+          x: window.innerWidth * 0.5,
+          y: window.innerHeight * 0.5,
+          targetX: window.innerWidth * 0.5,
+          targetY: window.innerHeight * 0.5
+        };
+
         const particles = [];
-        const particleCount = 50;
-        
-        class SecurityParticle {
-          constructor() {
-            this.reset();
-          }
-          
-          reset() {
-            this.x = Math.random() * securityCanvas.width;
-            this.y = Math.random() * securityCanvas.height;
-            this.vx = (Math.random() - 0.5) * 2;
-            this.vy = (Math.random() - 0.5) * 2;
-            this.size = Math.random() * 3 + 1;
-            this.color = `hsl(${Math.random() * 60 + 240}, 70%, 60%)`;
-          }
-          
-          update() {
-            this.x += this.vx;
-            this.y += this.vy;
-            
-            if (this.x < 0 || this.x > securityCanvas.width) this.vx *= -1;
-            if (this.y < 0 || this.y > securityCanvas.height) this.vy *= -1;
-          }
-          
-          draw() {
-            ctx.beginPath();
-            ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2);
-            ctx.fillStyle = this.color;
-            ctx.fill();
-          }
-        }
-        
-        for (let i = 0; i < particleCount; i++) {
-          particles.push(new SecurityParticle());
-        }
-        
-        function animateSecurityViz() {
-          ctx.fillStyle = 'rgba(30, 30, 46, 0.1)';
-          ctx.fillRect(0, 0, securityCanvas.width, securityCanvas.height);
-          
-          particles.forEach(p => {
-            p.update();
-            p.draw();
-            
-            particles.forEach(p2 => {
-              const dx = p.x - p2.x;
-              const dy = p.y - p2.y;
-              const dist = Math.sqrt(dx * dx + dy * dy);
-              
-              if (dist < 100) {
-                ctx.beginPath();
-                ctx.strokeStyle = `rgba(102, 126, 234, ${1 - dist / 100})`;
-                ctx.lineWidth = 0.5;
-                ctx.moveTo(p.x, p.y);
-                ctx.lineTo(p2.x, p2.y);
-                ctx.stroke();
-              }
-            });
-          });
-          
-          requestAnimationFrame(animateSecurityViz);
-        }
-        animateSecurityViz();
-      }
+        let viewportWidth = window.innerWidth;
+        let viewportHeight = window.innerHeight;
 
-      // Network Visualization
-      const networkCanvas = document.getElementById('networkViz');
-      if (networkCanvas) {
-        const ctx2 = networkCanvas.getContext('2d');
-        networkCanvas.width = networkCanvas.offsetWidth;
-        networkCanvas.height = networkCanvas.offsetHeight;
-        
-        const nodes = [];
-        const nodeCount = 30;
-        
-        class NetworkNode {
-          constructor() {
-            this.x = Math.random() * networkCanvas.width;
-            this.y = Math.random() * networkCanvas.height;
-            this.vx = (Math.random() - 0.5) * 1;
-            this.vy = (Math.random() - 0.5) * 1;
-            this.size = Math.random() * 6 + 3;
-            this.pulse = Math.random() * Math.PI * 2;
-            this.color = Math.random() > 0.8 ? '#f5576c' : '#667eea';
-          }
-          
-          update() {
-            this.x += this.vx;
-            this.y += this.vy;
-            this.pulse += 0.05;
-            
-            if (this.x < 0 || this.x > networkCanvas.width) this.vx *= -1;
-            if (this.y < 0 || this.y > networkCanvas.height) this.vy *= -1;
-          }
-          
-          draw() {
-            ctx2.beginPath();
-            ctx2.arc(this.x, this.y, this.size + Math.sin(this.pulse) * 2, 0, Math.PI * 2);
-            ctx2.fillStyle = this.color;
-            ctx2.fill();
-            ctx2.strokeStyle = 'rgba(255, 255, 255, 0.5)';
-            ctx2.lineWidth = 2;
-            ctx2.stroke();
-          }
-        }
-        
-        for (let i = 0; i < nodeCount; i++) {
-          nodes.push(new NetworkNode());
-        }
-        
-        function animateNetworkViz() {
-          ctx2.fillStyle = 'rgba(30, 30, 46, 0.1)';
-          ctx2.fillRect(0, 0, networkCanvas.width, networkCanvas.height);
-          
-          nodes.forEach((n, i) => {
-            n.update();
-            n.draw();
-            
-            nodes.forEach((n2, j) => {
-              if (i !== j) {
-                const dx = n.x - n2.x;
-                const dy = n.y - n2.y;
-                const dist = Math.sqrt(dx * dx + dy * dy);
-                
-                if (dist < 150) {
-                  ctx2.beginPath();
-                  ctx2.strokeStyle = `rgba(240, 147, 251, ${0.3 - dist / 500})`;
-                  ctx2.lineWidth = 1;
-                  ctx2.moveTo(n.x, n.y);
-                  ctx2.lineTo(n2.x, n2.y);
-                  ctx2.stroke();
-                }
-              }
-            });
-          });
-          
-          requestAnimationFrame(animateNetworkViz);
-        }
-        animateNetworkViz();
-      }
+        function resizeCanvas() {
+          viewportWidth = window.innerWidth;
+          viewportHeight = window.innerHeight;
+          const dpr = Math.min(window.devicePixelRatio || 1, 2);
 
-      // Data Flow Visualization
-      const dataFlowCanvas = document.getElementById('dataFlowViz');
-      if (dataFlowCanvas) {
-        const ctx3 = dataFlowCanvas.getContext('2d');
-        dataFlowCanvas.width = dataFlowCanvas.offsetWidth;
-        dataFlowCanvas.height = dataFlowCanvas.offsetHeight;
-        
-        const dataPackets = [];
-        
-        class DataPacket {
-          constructor() {
-            this.x = Math.random() * dataFlowCanvas.width;
-            this.y = -20;
-            this.speed = Math.random() * 3 + 1;
-            this.size = Math.random() * 8 + 4;
-            this.hue = Math.random() * 60 + 180;
+          canvas.width = Math.floor(viewportWidth * dpr);
+          canvas.height = Math.floor(viewportHeight * dpr);
+          context.setTransform(dpr, 0, 0, dpr, 0, 0);
+        }
+
+        function createParticle() {
+          return {
+            x: Math.random() * viewportWidth,
+            y: Math.random() * viewportHeight,
+            vx: (Math.random() - 0.5) * 0.6,
+            vy: (Math.random() - 0.5) * 0.6,
+            size: Math.random() * 2.1 + 0.8,
+            hue: Math.random() > 0.45 ? 216 : 296
+          };
+        }
+
+        resizeCanvas();
+        for (let i = 0; i < particleCount; i += 1) {
+          particles.push(createParticle());
+        }
+
+        function updateBackgroundLight() {
+          const mouseXPercent = (pointer.x / viewportWidth) * 100;
+          const mouseYPercent = (pointer.y / viewportHeight) * 100;
+          background.style.setProperty('--mouse-x', `${mouseXPercent.toFixed(2)}%`);
+          background.style.setProperty('--mouse-y', `${mouseYPercent.toFixed(2)}%`);
+        }
+
+        function updateModels() {
+          const normX = pointer.x / viewportWidth - 0.5;
+          const normY = pointer.y / viewportHeight - 0.5;
+
+          models.forEach((model, index) => {
+            const depth = Number(model.dataset.depth || 0.08);
+            const tx = normX * depth * 180;
+            const ty = normY * depth * 180;
+            const rz = (index % 2 === 0 ? 1 : -1) * normX * depth * 50;
+            model.style.setProperty('--tx', `${tx.toFixed(2)}px`);
+            model.style.setProperty('--ty', `${ty.toFixed(2)}px`);
+            model.style.setProperty('--rz', `${rz.toFixed(2)}deg`);
+          });
+        }
+
+        function drawParticles() {
+          context.clearRect(0, 0, viewportWidth, viewportHeight);
+
+          const pointerRadius = isSmallScreen ? 160 : 220;
+          const pointerRadiusSq = pointerRadius * pointerRadius;
+
+          for (let i = 0; i < particles.length; i += 1) {
+            const particle = particles[i];
+            const dx = pointer.x - particle.x;
+            const dy = pointer.y - particle.y;
+            const distanceSq = dx * dx + dy * dy;
+
+            if (distanceSq < pointerRadiusSq) {
+              const force = (1 - distanceSq / pointerRadiusSq) * 0.04;
+              particle.vx += dx * force * 0.0018;
+              particle.vy += dy * force * 0.0018;
+            }
+
+            particle.vx *= 0.985;
+            particle.vy *= 0.985;
+
+            particle.x += particle.vx;
+            particle.y += particle.vy;
+
+            if (particle.x < -20) particle.x = viewportWidth + 20;
+            if (particle.x > viewportWidth + 20) particle.x = -20;
+            if (particle.y < -20) particle.y = viewportHeight + 20;
+            if (particle.y > viewportHeight + 20) particle.y = -20;
           }
-          
-          update() {
-            this.y += this.speed;
-            if (this.y > dataFlowCanvas.height + 20) {
-              this.y = -20;
-              this.x = Math.random() * dataFlowCanvas.width;
+
+          for (let i = 0; i < particles.length; i += 1) {
+            const particle = particles[i];
+            context.beginPath();
+            context.arc(particle.x, particle.y, particle.size, 0, Math.PI * 2);
+            context.fillStyle = `hsla(${particle.hue}, 90%, 73%, 0.55)`;
+            context.fill();
+
+            for (let j = i + 1; j < particles.length; j += 1) {
+              const peer = particles[j];
+              const dx = particle.x - peer.x;
+              const dy = particle.y - peer.y;
+              const distance = Math.sqrt(dx * dx + dy * dy);
+              const linkDistance = isSmallScreen ? 92 : 128;
+
+              if (distance < linkDistance) {
+                const alpha = (1 - distance / linkDistance) * 0.23;
+                context.beginPath();
+                context.strokeStyle = `rgba(153, 199, 255, ${alpha.toFixed(3)})`;
+                context.lineWidth = 0.7;
+                context.moveTo(particle.x, particle.y);
+                context.lineTo(peer.x, peer.y);
+                context.stroke();
+              }
             }
           }
-          
-          draw() {
-            ctx3.save();
-            ctx3.translate(this.x, this.y);
-            
-            // Draw packet
-            ctx3.fillStyle = `hsl(${this.hue}, 70%, 60%)`;
-            ctx3.fillRect(-this.size / 2, -this.size / 2, this.size, this.size);
-            
-            // Draw trail
-            const gradient = ctx3.createLinearGradient(0, 0, 0, -50);
-            gradient.addColorStop(0, `hsla(${this.hue}, 70%, 60%, 0.8)`);
-            gradient.addColorStop(1, `hsla(${this.hue}, 70%, 60%, 0)`);
-            ctx3.fillStyle = gradient;
-            ctx3.fillRect(-this.size / 4, -50, this.size / 2, 50);
-            
-            ctx3.restore();
-          }
+
+          const glowRadius = isSmallScreen ? 160 : 230;
+          const glow = context.createRadialGradient(pointer.x, pointer.y, 0, pointer.x, pointer.y, glowRadius);
+          glow.addColorStop(0, 'rgba(79, 172, 254, 0.22)');
+          glow.addColorStop(0.55, 'rgba(79, 172, 254, 0.08)');
+          glow.addColorStop(1, 'rgba(79, 172, 254, 0)');
+          context.beginPath();
+          context.fillStyle = glow;
+          context.arc(pointer.x, pointer.y, glowRadius, 0, Math.PI * 2);
+          context.fill();
         }
-        
-        for (let i = 0; i < 40; i++) {
-          dataPackets.push(new DataPacket());
+
+        function animate() {
+          pointer.x += (pointer.targetX - pointer.x) * 0.12;
+          pointer.y += (pointer.targetY - pointer.y) * 0.12;
+
+          updateBackgroundLight();
+          updateModels();
+          drawParticles();
+
+          requestAnimationFrame(animate);
         }
-        
-        function animateDataFlowViz() {
-          ctx3.fillStyle = 'rgba(30, 30, 46, 0.15)';
-          ctx3.fillRect(0, 0, dataFlowCanvas.width, dataFlowCanvas.height);
-          
-          dataPackets.forEach(p => {
-            p.update();
-            p.draw();
-          });
-          
-          requestAnimationFrame(animateDataFlowViz);
-        }
-        animateDataFlowViz();
-      }
+
+        window.addEventListener('pointermove', (event) => {
+          pointer.targetX = event.clientX;
+          pointer.targetY = event.clientY;
+        });
+
+        window.addEventListener('resize', () => {
+          resizeCanvas();
+          updateBackgroundLight();
+        });
+
+        animate();
+      })();
 
       // Auto-reload when analysis completes (7 second check interval)
       let autoReloadInterval = null;
