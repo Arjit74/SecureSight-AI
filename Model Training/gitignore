@@ -1,0 +1,39 @@
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environment
+.venv/
+venv/
+env/
+
+# VS Code settings
+.vscode/
+
+# Environment variables
+.env
+
+# Logs
+*.log
+
+# Build files
+build/
+dist/
+*.egg-info/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Dataset / data files
+data/
+
+# Model files
+models/
+*.pkl
+*.joblib
+*.h5
+
+# OS files
+.DS_Store
+Thumbs.db
