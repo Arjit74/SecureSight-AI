@@ -18,7 +18,19 @@ from werkzeug.security import generate_password_hash, check_password_hash
 
 load_dotenv()
 app = Flask(__name__)
-app.secret_key = os.environ.get("SECRET_KEY", "your-secret-key-change-in-production-12345")
+
+configured_secret = os.environ.get("SECRET_KEY")
+if configured_secret:
+    app.secret_key = configured_secret
+else:
+    app.secret_key = os.urandom(32).hex()
+    print("WARNING: SECRET_KEY is not set. Generated temporary key for this runtime only.")
+
+app.config.update(
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE="Lax",
+    SESSION_COOKIE_SECURE=os.environ.get("SESSION_COOKIE_SECURE", "false").lower() == "true",
+)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 UPLOAD_DIR = os.path.join(BASE_DIR, "uploads")
@@ -26,11 +38,34 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 received_items = []   # use DB in real project
 
-# Simple user database (use real database in production)
-users = {
-    "admin": generate_password_hash("admin123"),
-    "user": generate_password_hash("user123")
-}
+ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME", "admin")
+MAX_LOGIN_ATTEMPTS = int(os.environ.get("MAX_LOGIN_ATTEMPTS", "5"))
+LOGIN_WINDOW_SEC = int(os.environ.get("LOGIN_WINDOW_SEC", "300"))
+login_attempts = {}
+
+
+def _load_users():
+    env_users = {}
+
+    admin_hash = os.environ.get("ADMIN_PASSWORD_HASH")
+    if admin_hash:
+        env_users[ADMIN_USERNAME] = admin_hash
+
+    user_username = os.environ.get("USER_USERNAME")
+    user_hash = os.environ.get("USER_PASSWORD_HASH")
+    if user_username and user_hash:
+        env_users[user_username] = user_hash
+
+    if env_users:
+        return env_users
+
+    print("WARNING: Falling back to demo credentials. Set *_PASSWORD_HASH env vars for production.")
+    return {
+        ADMIN_USERNAME: generate_password_hash("admin123"),
+        "user": generate_password_hash("user123")
+    }
+
+users = _load_users()
 
 VT_API_KEY = os.environ.get("VT_API_KEY")
 VT_BASE_URL = "https://www.virustotal.com/api/v3"
@@ -51,10 +86,55 @@ def login_required(f):
 def admin_required(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
-        if 'username' not in session or session.get('username') != 'admin':
+        if 'username' not in session or session.get('username') != ADMIN_USERNAME:
             return redirect(url_for('index'))
         return f(*args, **kwargs)
     return decorated_function
+
+
+def _ensure_csrf_token():
+    token = session.get("csrf_token")
+    if not token:
+        token = uuid.uuid4().hex
+        session["csrf_token"] = token
+    return token
+
+
+@app.context_processor
+def inject_security_context():
+    return {
+        "csrf_token": _ensure_csrf_token(),
+        "admin_username": ADMIN_USERNAME,
+    }
+
+
+def _client_ip():
+    forwarded = request.headers.get("X-Forwarded-For", "")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.remote_addr or "unknown"
+
+
+def _cleanup_old_attempts(client_ip):
+    now = time.time()
+    attempts = login_attempts.get(client_ip, [])
+    attempts = [attempt for attempt in attempts if now - attempt < LOGIN_WINDOW_SEC]
+    login_attempts[client_ip] = attempts
+    return attempts
+
+
+def _is_login_rate_limited(client_ip):
+    return len(_cleanup_old_attempts(client_ip)) >= MAX_LOGIN_ATTEMPTS
+
+
+def _record_login_failure(client_ip):
+    attempts = _cleanup_old_attempts(client_ip)
+    attempts.append(time.time())
+    login_attempts[client_ip] = attempts
+
+
+def _clear_login_failures(client_ip):
+    login_attempts.pop(client_ip, None)
 
 
 def _calculate_file_hashes(file_path):
@@ -563,15 +643,30 @@ def suggest():
 
 @app.route("/login", methods=["GET", "POST"])
 def login():
+    client_ip = _client_ip()
+
     if request.method == "POST":
+        if _is_login_rate_limited(client_ip):
+            return render_template(
+                "login.html",
+                error="Too many failed login attempts. Please try again in a few minutes."
+            ), 429
+
+        submitted_csrf = request.form.get("csrf_token")
+        if not submitted_csrf or submitted_csrf != session.get("csrf_token"):
+            return render_template("login.html", error="Invalid or missing CSRF token"), 400
+
         username = request.form.get("username")
         password = request.form.get("password")
         
         if username in users and check_password_hash(users[username], password):
             session['username'] = username
-            session['is_admin'] = (username == 'admin')
+            session['is_admin'] = (username == ADMIN_USERNAME)
+            _clear_login_failures(client_ip)
+            _ensure_csrf_token()
             return redirect(url_for('index'))
         else:
+            _record_login_failure(client_ip)
             flash("Invalid credentials", "error")
             return render_template("login.html", error="Invalid username or password")
     
@@ -618,4 +713,5 @@ def uploads(filename):
 
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    debug_mode = os.environ.get("FLASK_DEBUG", "false").lower() == "true"
+    app.run(debug=debug_mode)
