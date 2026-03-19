@@ -289,6 +289,8 @@
         {% endif %}
 
         <form method="POST" action="/login">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+
           <div class="field">
             <label for="username">Username</label>
             <input type="text" id="username" name="username" required autofocus placeholder="Enter your username" />
@@ -303,9 +305,9 @@
         </form>
 
         <div class="demo">
-          <div class="title">Demo Credentials</div>
-          <div class="row">Admin: <strong>admin</strong> / <strong>admin123</strong></div>
-          <div class="row">User: <strong>user</strong> / <strong>user123</strong></div>
+          <div class="title">Security Note</div>
+          <div class="row">Use environment-based user credentials in production.</div>
+          <div class="row">Admin account key: <strong>{{ admin_username }}</strong></div>
         </div>
       </section>
     </main>

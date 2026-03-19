@@ -1,26 +1,284 @@
-// server.js - UPDATED WITH AI ENDPOINTS
 const path = require('path');
 require('dotenv').config({ path: path.resolve(__dirname, '.env') });
-const express = require('express');
+
 const cors = require('cors');
 const crypto = require('crypto');
+const express = require('express');
+const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
 const { Pool } = require('pg');
 
-// Import ML and feature extraction modules
 const URLFeatureExtractor = require('./lib/featureExtractor');
-const MLService = require('./node-ml-bridge/ml_service');
 const heuristicsManager = require('./lib/heuristicsManager');
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = Number(process.env.PORT) || 3000;
+const CACHE_TTL = Number(process.env.SCAN_CACHE_TTL_MS) || 5 * 60 * 1000;
+const MAX_CACHE_ENTRIES = Number(process.env.SCAN_CACHE_MAX_ENTRIES) || 1000;
+const API_KEY = process.env.API_KEY || '';
 
-// ========== DATABASE SETUP ==========
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL || 'postgresql://localhost:5432/securesight'
-});
+const poolConfig = process.env.DATABASE_URL
+  ? {
+      connectionString: process.env.DATABASE_URL,
+      ssl: process.env.PGSSLMODE === 'require' ? { rejectUnauthorized: false } : false
+    }
+  : {
+      host: process.env.PGHOST || 'localhost',
+      port: Number(process.env.PGPORT) || 5432,
+      user: process.env.PGUSER,
+      password: process.env.PGPASSWORD,
+      database: process.env.PGDATABASE || 'securesight'
+    };
 
-// Initialize database tables
-const initDatabase = async () => {
+const pool = new Pool(poolConfig);
+const scanCache = new Map();
+let mlServiceInstance = null;
+
+let dbReady = false;
+
+function buildFallbackMLService() {
+  return {
+    async initialize() {
+      return false;
+    },
+    async predictUrl() {
+      return {
+        is_malicious: false,
+        confidence: 0.5,
+        probabilities: {
+          benign: 0.5,
+          malicious: 0.5
+        },
+        top_features: {},
+        model_used: 'unavailable_fallback'
+      };
+    },
+    async getModelInfo() {
+      return {
+        url_model: {
+          loaded: false,
+          type: 'unavailable_fallback',
+          features: 'unknown',
+          status: 'unavailable'
+        },
+        file_model: {
+          loaded: false,
+          type: 'not_implemented',
+          status: 'pending'
+        },
+        initialized: false
+      };
+    }
+  };
+}
+
+function getMLService() {
+  if (mlServiceInstance) {
+    return mlServiceInstance;
+  }
+
+  const candidates = [
+    path.resolve(__dirname, '../node-ml-bridge/ml_service.js'),
+    path.resolve(__dirname, '..', 'node-ml-bridge', 'ml_service.js')
+  ];
+
+  for (const candidate of candidates) {
+    try {
+      // eslint-disable-next-line global-require, import/no-dynamic-require
+      mlServiceInstance = require(candidate);
+      return mlServiceInstance;
+    } catch (error) {
+      // Continue to the next candidate path.
+    }
+  }
+
+  mlServiceInstance = buildFallbackMLService();
+  console.warn('ML service module unavailable, using safe fallback predictions');
+  return mlServiceInstance;
+}
+
+function parseAllowedOrigins() {
+  const configured = (process.env.CORS_ALLOWED_ORIGINS || '')
+    .split(',')
+    .map((origin) => origin.trim())
+    .filter(Boolean);
+
+  if (configured.length > 0) {
+    return configured;
+  }
+
+  return [
+    'http://localhost:3000',
+    'http://localhost:5173',
+    'http://127.0.0.1:3000',
+    'http://127.0.0.1:5173'
+  ];
+}
+
+const allowedOrigins = parseAllowedOrigins();
+
+function isExtensionOrigin(origin) {
+  return origin.startsWith('chrome-extension://') || origin.startsWith('moz-extension://');
+}
+
+function cacheGet(key) {
+  const cached = scanCache.get(key);
+  if (!cached) {
+    return null;
+  }
+
+  if (Date.now() - cached.timestamp > CACHE_TTL) {
+    scanCache.delete(key);
+    return null;
+  }
+
+  return cached;
+}
+
+function cacheSet(key, data) {
+  if (scanCache.size >= MAX_CACHE_ENTRIES) {
+    const oldestKey = scanCache.keys().next().value;
+    if (oldestKey) {
+      scanCache.delete(oldestKey);
+    }
+  }
+
+  scanCache.set(key, {
+    data,
+    timestamp: Date.now()
+  });
+}
+
+function parsePositiveInt(value, fallback, min, max) {
+  const parsed = Number.parseInt(value, 10);
+  if (Number.isNaN(parsed)) {
+    return fallback;
+  }
+
+  return Math.max(min, Math.min(parsed, max));
+}
+
+function timingSafeEqual(a, b) {
+  const aBuf = Buffer.from(String(a || ''), 'utf8');
+  const bBuf = Buffer.from(String(b || ''), 'utf8');
+
+  if (aBuf.length !== bBuf.length) {
+    return false;
+  }
+
+  return crypto.timingSafeEqual(aBuf, bBuf);
+}
+
+function validateAndNormalizeUrl(input) {
+  if (typeof input !== 'string') {
+    throw new Error('URL must be a string');
+  }
+
+  const trimmed = input.trim();
+  if (!trimmed) {
+    throw new Error('URL is required');
+  }
+
+  if (trimmed.length > 2048) {
+    throw new Error('URL length exceeds 2048 characters');
+  }
+
+  const candidate = trimmed.includes('://') ? trimmed : `https://${trimmed}`;
+  let parsed;
+
+  try {
+    parsed = new URL(candidate);
+  } catch {
+    throw new Error('Invalid URL format');
+  }
+
+  if (!['http:', 'https:'].includes(parsed.protocol)) {
+    throw new Error('Only HTTP/HTTPS URLs are supported');
+  }
+
+  if (!parsed.hostname) {
+    throw new Error('URL hostname is required');
+  }
+
+  return parsed.toString();
+}
+
+function combineScores(mlResult, heuristicResult) {
+  const mlWeight = 0.75;
+  const heuristicWeight = 0.25;
+
+  const confidence = typeof mlResult?.confidence === 'number' ? mlResult.confidence : 0.5;
+  const mlRisk = mlResult?.is_malicious ? confidence * 100 : (1 - confidence) * 100;
+
+  let heuristicRisk = 50;
+  if (typeof heuristicResult?.totalSuspicion === 'number') {
+    heuristicRisk = Math.max(0, Math.min(100, heuristicResult.totalSuspicion * 3.3));
+  } else if (
+    typeof heuristicResult?.score === 'number' &&
+    typeof heuristicResult?.maxScore === 'number' &&
+    heuristicResult.maxScore > 0
+  ) {
+    const ratio = heuristicResult.score / heuristicResult.maxScore;
+    heuristicRisk = Math.max(0, Math.min(100, 100 - ratio * 100));
+  }
+
+  return Number((mlRisk * mlWeight + heuristicRisk * heuristicWeight).toFixed(2));
+}
+
+function determineVerdict(riskScore, confidence) {
+  if (riskScore >= 75 && confidence >= 0.75) return 'BLOCK';
+  if (riskScore >= 45 && confidence >= 0.55) return 'WARN';
+  if (riskScore <= 25 && confidence <= 0.6) return 'ALLOW';
+  return 'WARN';
+}
+
+function generateRecommendations(verdict, mlResult) {
+  const recommendations = [];
+
+  if (verdict === 'BLOCK') {
+    recommendations.push('Do not visit this URL');
+    recommendations.push('Report this URL to your security team');
+
+    if (mlResult.top_features && Object.keys(mlResult.top_features).length > 0) {
+      const topFeature = Object.keys(mlResult.top_features)[0];
+      recommendations.push(`Top risk factor: ${topFeature}`);
+    }
+
+    return recommendations;
+  }
+
+  if (verdict === 'WARN') {
+    recommendations.push('Proceed only if you trust the source');
+    recommendations.push('Verify the domain and certificate before entering credentials');
+    return recommendations;
+  }
+
+  recommendations.push('URL appears low risk based on current signals');
+  recommendations.push('Continue following standard browsing precautions');
+  return recommendations;
+}
+
+async function storeScanInDatabase(scanData) {
+  try {
+    await pool.query(
+      `INSERT INTO scans (id, url, verdict, confidence, features, model_used, analysis_time_ms)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      [
+        scanData.scan_id,
+        scanData.url,
+        scanData.verdict,
+        scanData.confidence,
+        JSON.stringify(scanData.detailed_analysis),
+        scanData.model_used,
+        scanData.analysis_time_ms
+      ]
+    );
+  } catch (error) {
+    console.error('Failed to store scan in database:', error.message);
+  }
+}
+
+async function initDatabase() {
   try {
     await pool.query(`
       CREATE TABLE IF NOT EXISTS scans (
@@ -34,7 +292,7 @@ const initDatabase = async () => {
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )
     `);
-    
+
     await pool.query(`
       CREATE TABLE IF NOT EXISTS model_performance (
         id SERIAL PRIMARY KEY,
@@ -45,67 +303,104 @@ const initDatabase = async () => {
         timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )
     `);
-    
-    console.log('✅ Database tables initialized');
-  } catch (err) {
-    console.error('❌ Database initialization error:', err.message);
+
+    dbReady = true;
+    console.log('Database tables initialized');
+  } catch (error) {
+    dbReady = false;
+    console.error('Database initialization error:', error.message);
   }
-};
+}
 
-initDatabase();
+function requireApiKey(req, res, next) {
+  if (!API_KEY) {
+    return next();
+  }
 
-// ========== MIDDLEWARE ==========
-const corsOptions = {
-  origin: function (origin, callback) {
-    const allowedOrigins = [
-      'http://localhost:3000',
-      'http://localhost:5173',
-      'http://127.0.0.1:3000',
-      'http://127.0.0.1:5173',
-      'chrome-extension://*',
-      'moz-extension://*'
-    ];
+  const incoming = req.get('x-api-key');
+  if (!incoming || !timingSafeEqual(incoming, API_KEY)) {
+    return res.status(401).json({ error: 'Unauthorized: invalid API key' });
+  }
 
-    if (!origin || allowedOrigins.some(allowed => origin.startsWith(allowed.replace('*', '')))) {
-      callback(null, true);
-    } else {
-      console.log('❌ CORS rejected for origin:', origin);
-      callback(new Error('Not allowed by CORS'));
-    }
-  },
-  credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization']
-};
+  return next();
+}
 
-app.use(cors(corsOptions));
-app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+app.disable('x-powered-by');
 
-// Rate limiting
-const rateLimit = require('express-rate-limit');
-const limiter = rateLimit({
-  windowMs: 60 * 1000,
-  max: 100,
-  message: 'Too many requests'
+app.use((req, res, next) => {
+  req.requestId = crypto.randomUUID();
+  res.setHeader('X-Request-Id', req.requestId);
+  next();
 });
-app.use('/api/', limiter);
 
-// ========== SCAN RESULTS CACHE ==========
-const scanCache = new Map();
-const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+app.use(
+  helmet({
+    contentSecurityPolicy: false,
+    crossOriginEmbedderPolicy: false
+  })
+);
 
-// ========== HEALTH CHECK ==========
+app.use(
+  cors({
+    origin(origin, callback) {
+      if (!origin) {
+        callback(null, true);
+        return;
+      }
+
+      if (isExtensionOrigin(origin) || allowedOrigins.includes(origin)) {
+        callback(null, true);
+        return;
+      }
+
+      callback(new Error('Not allowed by CORS'));
+    },
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-API-Key']
+  })
+);
+
+app.use(express.json({ limit: process.env.REQUEST_SIZE_LIMIT || '1mb' }));
+app.use(express.urlencoded({ extended: true, limit: process.env.REQUEST_SIZE_LIMIT || '1mb' }));
+
+const apiLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: Number(process.env.RATE_LIMIT_MAX) || 120,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    error: 'Too many requests. Try again in a minute.'
+  }
+});
+
+const scanLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: Number(process.env.SCAN_RATE_LIMIT_MAX) || 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    error: 'Scan rate limit exceeded. Slow down and retry.'
+  }
+});
+
+app.use('/api', apiLimiter);
+app.use('/api/scan', scanLimiter);
+
+app.use('/api/scan', requireApiKey);
+app.use('/api/scans', requireApiKey);
+app.use('/api/model', requireApiKey);
+app.use('/api/debug', requireApiKey);
+
 app.get('/api/health', async (req, res) => {
   try {
-    const mlInfo = await MLService.getModelInfo();
-    
+    const mlInfo = await getMLService().getModelInfo();
     res.json({
-      status: 'ok',
+      status: dbReady ? 'ok' : 'degraded',
       timestamp: new Date().toISOString(),
-      version: '2.0.0',
+      version: '2.1.0',
       ml: mlInfo,
-      database: 'connected',
+      database: dbReady ? 'connected' : 'unavailable',
       uptime: process.uptime()
     });
   } catch (error) {
@@ -113,67 +408,66 @@ app.get('/api/health', async (req, res) => {
   }
 });
 
-// ========== AI SCAN ENDPOINTS ==========
+app.get('/api/security/status', (req, res) => {
+  res.json({
+    api_key_required: Boolean(API_KEY),
+    cors_allowed_origins_count: allowedOrigins.length,
+    security_headers: 'helmet',
+    rate_limiting: {
+      general_per_minute: Number(process.env.RATE_LIMIT_MAX) || 120,
+      scans_per_minute: Number(process.env.SCAN_RATE_LIMIT_MAX) || 30
+    }
+  });
+});
 
-// Scan URL with AI
 app.post('/api/scan/url', async (req, res) => {
   const startTime = Date.now();
-  const { url } = req.body;
-  
-  if (!url) {
-    return res.status(400).json({ error: 'URL is required' });
+
+  let normalizedUrl;
+  try {
+    normalizedUrl = validateAndNormalizeUrl(req.body?.url);
+  } catch (error) {
+    return res.status(400).json({ error: error.message });
   }
-  
-  console.log(`🔍 AI Scanning URL: ${url}`);
-  
-  // Check cache
-  const cacheKey = `url:${url}`;
-  const cached = scanCache.get(cacheKey);
-  if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
-    console.log(`⚡ Cache hit for URL: ${url}`);
+
+  const cacheKey = `url:${normalizedUrl}`;
+  const cached = cacheGet(cacheKey);
+
+  if (cached) {
     return res.json({
       ...cached.data,
       cached: true,
       cache_age_ms: Date.now() - cached.timestamp
     });
   }
-  
+
   try {
-    // Step 1: Extract features
     const featureStart = Date.now();
-    const features = URLFeatureExtractor.extractFeatures(url);
+    const features = URLFeatureExtractor.extractFeatures(normalizedUrl);
     const featureTime = Date.now() - featureStart;
-    
-    console.log(`📊 Extracted ${Object.keys(features).length} features in ${featureTime}ms`);
-    
-    // Step 2: ML Prediction
+
     const mlStart = Date.now();
-    const mlResult = await MLService.predictUrl(features);
+    const mlResult = await getMLService().predictUrl(features);
     const mlTime = Date.now() - mlStart;
-    
-    // Step 3: Heuristics analysis
-    const heuristicResult = heuristicsManager.evaluate(url, features);
-    
-    // Step 4: Combine results
-    const combinedScore = this.combineScores(mlResult, heuristicResult);
-    
-    // Step 5: Determine verdict
-    const verdict = this.determineVerdict(combinedScore, mlResult.confidence);
-    
-    // Prepare response
+
+    const heuristicResult = heuristicsManager.evaluate(normalizedUrl, {});
+    const riskScore = combineScores(mlResult, heuristicResult);
+    const confidence = typeof mlResult.confidence === 'number' ? mlResult.confidence : 0.5;
+    const verdict = determineVerdict(riskScore, confidence);
+
     const result = {
       scan_id: crypto.randomUUID(),
-      url: url,
-      verdict: verdict,
-      confidence: mlResult.confidence,
-      risk_score: combinedScore,
+      url: normalizedUrl,
+      verdict,
+      confidence,
+      risk_score: riskScore,
       model_used: mlResult.model_used,
       analysis_time_ms: Date.now() - startTime,
       features_analyzed: Object.keys(features).length,
       detailed_analysis: {
         ml_prediction: {
           is_malicious: mlResult.is_malicious,
-          confidence: mlResult.confidence,
+          confidence,
           top_features: mlResult.top_features,
           probabilities: mlResult.probabilities
         },
@@ -181,23 +475,16 @@ app.post('/api/scan/url', async (req, res) => {
         feature_extraction_time: featureTime,
         ml_inference_time: mlTime
       },
-      recommendations: this.generateRecommendations(verdict, mlResult, heuristicResult)
+      recommendations: generateRecommendations(verdict, mlResult)
     };
-    
-    // Cache result
-    scanCache.set(cacheKey, {
-      data: result,
-      timestamp: Date.now()
-    });
-    
-    // Store in database
-    await this.storeScanInDatabase(result);
-    
-    res.json(result);
-    
+
+    cacheSet(cacheKey, result);
+    await storeScanInDatabase(result);
+
+    return res.json(result);
   } catch (error) {
-    console.error('❌ URL scan error:', error);
-    res.status(500).json({
+    console.error('URL scan error:', error.message);
+    return res.status(500).json({
       error: 'Scan failed',
       message: error.message,
       fallback_verdict: 'WARN',
@@ -206,133 +493,116 @@ app.post('/api/scan/url', async (req, res) => {
   }
 });
 
-// Scan file with AI
 app.post('/api/scan/file', async (req, res) => {
-  try {
-    // For now, return not implemented with mock data
-    // In production, you would:
-    // 1. Extract file features
-    // 2. Use file ML model
-    // 3. Return prediction
-    
-    res.json({
-      scan_id: crypto.randomUUID(),
-      verdict: 'PENDING',
-      message: 'File scanning coming soon',
-      note: 'Train file model using EMBER dataset for production'
-    });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
+  res.status(501).json({
+    scan_id: crypto.randomUUID(),
+    verdict: 'PENDING',
+    message: 'File scanning endpoint is not implemented yet',
+    note: 'Train and integrate a file model (EMBER recommended) before enabling this route'
+  });
 });
 
-// Bulk URL scan
 app.post('/api/scan/bulk', async (req, res) => {
-  const { urls } = req.body;
-  
-  if (!urls || !Array.isArray(urls) || urls.length === 0) {
-    return res.status(400).json({ error: 'URLs array is required' });
+  const urls = req.body?.urls;
+
+  if (!Array.isArray(urls) || urls.length === 0) {
+    return res.status(400).json({ error: 'urls must be a non-empty array' });
   }
-  
+
   if (urls.length > 50) {
     return res.status(400).json({ error: 'Maximum 50 URLs per request' });
   }
-  
-  console.log(`🔍 Bulk scanning ${urls.length} URLs`);
-  
+
   try {
     const results = [];
-    
-    for (const url of urls) {
+
+    for (const inputUrl of urls) {
       try {
-        const features = URLFeatureExtractor.extractFeatures(url);
-        const mlResult = await MLService.predictUrl(features);
-        
+        const normalizedUrl = validateAndNormalizeUrl(inputUrl);
+        const features = URLFeatureExtractor.extractFeatures(normalizedUrl);
+        const mlResult = await getMLService().predictUrl(features);
+
         results.push({
-          url: url,
-          is_malicious: mlResult.is_malicious,
-          confidence: mlResult.confidence,
+          url: normalizedUrl,
+          is_malicious: Boolean(mlResult.is_malicious),
+          confidence: typeof mlResult.confidence === 'number' ? mlResult.confidence : 0,
           risk_level: mlResult.is_malicious ? 'HIGH' : 'LOW'
         });
       } catch (error) {
         results.push({
-          url: url,
+          url: String(inputUrl || ''),
           error: error.message,
           status: 'failed'
         });
       }
     }
-    
-    // Statistics
-    const maliciousCount = results.filter(r => r.is_malicious).length;
-    const avgConfidence = results
-      .filter(r => r.confidence)
-      .reduce((sum, r) => sum + r.confidence, 0) / results.length;
-    
-    res.json({
+
+    const maliciousCount = results.filter((result) => result.is_malicious).length;
+    const confidenceSamples = results
+      .filter((result) => typeof result.confidence === 'number')
+      .map((result) => result.confidence);
+
+    const avgConfidence = confidenceSamples.length
+      ? Number((confidenceSamples.reduce((sum, value) => sum + value, 0) / confidenceSamples.length).toFixed(4))
+      : 0;
+
+    return res.json({
       total_scanned: urls.length,
       malicious_count: maliciousCount,
       safe_count: urls.length - maliciousCount,
       avg_confidence: avgConfidence,
-      results: results
+      results
     });
-    
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    return res.status(500).json({ error: error.message });
   }
 });
 
-// Get scan history
 app.get('/api/scans', async (req, res) => {
   try {
-    const limit = parseInt(req.query.limit) || 50;
-    const offset = parseInt(req.query.offset) || 0;
-    
+    const limit = parsePositiveInt(req.query.limit, 50, 1, 200);
+    const offset = parsePositiveInt(req.query.offset, 0, 0, 100000);
+
     const result = await pool.query(
       'SELECT id, url, verdict, confidence, model_used, analysis_time_ms, created_at FROM scans ORDER BY created_at DESC LIMIT $1 OFFSET $2',
       [limit, offset]
     );
-    
-    res.json({
+
+    return res.json({
       total: result.rows.length,
+      limit,
+      offset,
       scans: result.rows
     });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    return res.status(500).json({ error: error.message });
   }
 });
 
-// Get specific scan
 app.get('/api/scans/:scanId', async (req, res) => {
   try {
     const { scanId } = req.params;
-    
-    const result = await pool.query(
-      'SELECT * FROM scans WHERE id = $1',
-      [scanId]
-    );
-    
+
+    const result = await pool.query('SELECT * FROM scans WHERE id = $1', [scanId]);
+
     if (result.rows.length === 0) {
       return res.status(404).json({ error: 'Scan not found' });
     }
-    
-    res.json(result.rows[0]);
+
+    return res.json(result.rows[0]);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    return res.status(500).json({ error: error.message });
   }
 });
 
-// Model information
 app.get('/api/model/info', async (req, res) => {
   try {
-    const info = await MLService.getModelInfo();
-    
-    // Add performance metrics from database
+    const info = await getMLService().getModelInfo();
     const performance = await pool.query(
       'SELECT * FROM model_performance ORDER BY timestamp DESC LIMIT 5'
     );
-    
-    res.json({
+
+    return res.json({
       models: info,
       performance: performance.rows,
       feature_extractors: {
@@ -345,25 +615,24 @@ app.get('/api/model/info', async (req, res) => {
       }
     });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    return res.status(500).json({ error: error.message });
   }
 });
 
-// Test endpoint for feature extraction
 app.post('/api/debug/features', async (req, res) => {
-  const { url } = req.body;
-  
-  if (!url) {
-    return res.status(400).json({ error: 'URL is required' });
-  }
-  
+  let normalizedUrl;
   try {
-    const features = URLFeatureExtractor.extractFeatures(url);
-    
-    res.json({
-      url: url,
+    normalizedUrl = validateAndNormalizeUrl(req.body?.url);
+  } catch (error) {
+    return res.status(400).json({ error: error.message });
+  }
+
+  try {
+    const features = URLFeatureExtractor.extractFeatures(normalizedUrl);
+    return res.json({
+      url: normalizedUrl,
       feature_count: Object.keys(features).length,
-      features: features,
+      features,
       sample_features: {
         url_length: features.url_length,
         digit_ratio: features.digit_ratio,
@@ -373,109 +642,69 @@ app.post('/api/debug/features', async (req, res) => {
       }
     });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    return res.status(500).json({ error: error.message });
   }
 });
 
-// ========== HELPER FUNCTIONS ==========
-
-function combineScores(mlResult, heuristicResult) {
-  // Weighted combination of ML and heuristic scores
-  const mlWeight = 0.7;
-  const heuristicWeight = 0.3;
-  
-  const mlScore = mlResult.is_malicious ? 
-    (mlResult.confidence * 100) : 
-    ((1 - mlResult.confidence) * 100);
-  
-  const heuristicScore = heuristicResult.score || 50;
-  
-  return (mlScore * mlWeight) + (heuristicScore * heuristicWeight);
-}
-
-function determineVerdict(riskScore, confidence) {
-  if (riskScore >= 70 && confidence > 0.8) return 'BLOCK';
-  if (riskScore >= 40 && confidence > 0.6) return 'WARN';
-  if (riskScore < 20 || confidence < 0.4) return 'ALLOW';
-  return 'WARN'; // Default to warn if uncertain
-}
-
-function generateRecommendations(verdict, mlResult, heuristicResult) {
-  const recommendations = [];
-  
-  if (verdict === 'BLOCK') {
-    recommendations.push('Do not visit this URL');
-    recommendations.push('Report as phishing if appropriate');
-    
-    if (mlResult.top_features && Object.keys(mlResult.top_features).length > 0) {
-      const topFeature = Object.keys(mlResult.top_features)[0];
-      recommendations.push(`Top risk factor: ${topFeature}`);
-    }
-  } else if (verdict === 'WARN') {
-    recommendations.push('Exercise caution when visiting');
-    recommendations.push('Verify the website authenticity');
-    recommendations.push('Check for HTTPS encryption');
-  } else {
-    recommendations.push('URL appears safe');
-    recommendations.push('Standard browsing precautions apply');
+app.use((error, req, res, next) => {
+  if (error && error.message === 'Not allowed by CORS') {
+    return res.status(403).json({ error: 'CORS: origin not allowed' });
   }
-  
-  return recommendations;
-}
 
-async function storeScanInDatabase(scanData) {
-  try {
-    await pool.query(
-      `INSERT INTO scans (id, url, verdict, confidence, features, model_used, analysis_time_ms) 
-       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-      [
-        scanData.scan_id,
-        scanData.url,
-        scanData.verdict,
-        scanData.confidence,
-        JSON.stringify(scanData.detailed_analysis),
-        scanData.model_used,
-        scanData.analysis_time_ms
-      ]
-    );
-  } catch (error) {
-    console.error('Failed to store scan in database:', error);
+  return next(error);
+});
+
+app.use((error, req, res, next) => {
+  console.error('Unhandled API error:', error.message);
+  if (res.headersSent) {
+    return next(error);
   }
-}
 
-// ========== START SERVER ==========
-app.listen(PORT, async () => {
-  console.log(`
-╔══════════════════════════════════════════════════════════════╗
-║                                                              ║
-║   🔐 SecureSight AI - Server-Based Malware Detection        ║
-║                                                              ║
-║   Server running on: http://localhost:${PORT}                  ║
-║                                                              ║
-║   Endpoints:                                                 ║
-║   - POST /api/scan/url        - Scan URL with AI            ║
-║   - POST /api/scan/file       - Scan file (coming soon)     ║
-║   - POST /api/scan/bulk       - Bulk URL scan               ║
-║   - GET  /api/scans           - Scan history                ║
-║   - GET  /api/model/info      - Model information           ║
-║   - GET  /api/health          - Health check                ║
-║   - POST /api/debug/features  - Debug feature extraction    ║
-║                                                              ║
-╚══════════════════════════════════════════════════════════════╝
-  `);
-  
-  // Initialize ML service
-  console.log('🤖 Initializing AI engine...');
-  const mlInitialized = await MLService.initialize();
-  
+  return res.status(500).json({
+    error: 'Internal server error',
+    request_id: req.requestId
+  });
+});
+
+async function bootstrap() {
+  heuristicsManager.load();
+  await initDatabase();
+
+  const mlInitialized = await getMLService().initialize();
   if (mlInitialized) {
-    console.log('✅ AI engine ready for inference');
-    console.log('📊 Feature extractor: 65+ URL features');
-    console.log('🧠 ML Model: Random Forest classifier');
+    console.log('AI engine ready for inference');
   } else {
-    console.log('⚠️ AI engine in fallback mode (using heuristics)');
+    console.log('AI engine running in fallback mode');
   }
-  
-  console.log(`📁 Database: ${process.env.DATABASE_URL ? 'Connected' : 'Local'}`);
-  console.log('\n🚀 Ready to accept scan requests!');
-});
+}
+
+async function startServer() {
+  await bootstrap();
+
+  return app.listen(PORT, () => {
+    console.log(`SecureSight AI backend running on http://localhost:${PORT}`);
+    console.log(`Database status: ${dbReady ? 'Connected' : 'Unavailable'}`);
+    console.log(`API key enforcement: ${API_KEY ? 'Enabled' : 'Disabled (set API_KEY to enable)'}`);
+  });
+}
+
+async function closeResources() {
+  await pool.end();
+}
+
+if (require.main === module) {
+  startServer().catch((error) => {
+    console.error('Server startup failed:', error);
+    process.exit(1);
+  });
+}
+
+module.exports = {
+  app,
+  startServer,
+  closeResources,
+  combineScores,
+  determineVerdict,
+  validateAndNormalizeUrl,
+  generateRecommendations
+};
