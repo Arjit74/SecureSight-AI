@@ -248,7 +248,11 @@
         </div>
         <div class="controls">
           <div class="user-badge">
+            {% if picture %}
+            <img src="{{ picture }}" alt="User Avatar" style="width: 32px; height: 32px; border-radius: 50%; object-fit: cover;" title="Google OAuth User" />
+            {% else %}
             <span>👤</span>
+            {% endif %}
             <span>{{ username }}</span>
           </div>
           {% if is_admin %}
