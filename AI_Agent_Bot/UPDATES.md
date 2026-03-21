@@ -1,5 +1,29 @@
 # 🚀 SecureSight AI - Major Updates & Improvements
 
+## Latest Release: Google OAuth2 Authentication ✨
+
+### 🔐 New Authentication Features
+
+**Google OAuth2 Integration Added**
+- Single Sign-On (SSO) with Google accounts
+- Seamless login experience without password management
+- Secure token-based authentication
+- User profile information stored (email, name, avatar)
+- Backward compatible with existing username/password authentication
+
+**Key Features**:
+✅ OAuth 2.0 standard compliance  
+✅ CSRF protection with state tokens  
+✅ Secure session management (HttpOnly, SameSite cookies)  
+✅ Dual authentication methods on login page  
+✅ User-friendly "Continue with Google" button  
+✅ Automatic user registration on first login  
+
+**Setup Required**:
+- Configure Google Cloud OAuth credentials
+- Add environment variables (`GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`)
+- See [GOOGLE_OAUTH_SETUP.md](GOOGLE_OAUTH_SETUP.md) for detailed instructions
+
 ## ✅ Issues Fixed
 
 ### 1. **AccessDenied Error - RESOLVED** ✓

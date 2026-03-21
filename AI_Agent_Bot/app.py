@@ -15,9 +15,13 @@ from dotenv import load_dotenv
 from flask import Flask, jsonify, render_template, request, send_from_directory, Response, session, redirect, url_for, flash
 from werkzeug.utils import secure_filename
 from werkzeug.security import generate_password_hash, check_password_hash
+from oauth import oauth_handler, parse_token
 
 load_dotenv()
 app = Flask(__name__)
+
+# Initialize OAuth
+oauth_handler.init_app(app)
 
 configured_secret = os.environ.get("SECRET_KEY")
 if configured_secret:
@@ -66,6 +70,10 @@ def _load_users():
     }
 
 users = _load_users()
+
+# OAuth users storage: maps OAuth provider + ID to user info
+# In production, use a database instead
+oauth_users = {}  # {google_id: {email, name, picture}}
 
 VT_API_KEY = os.environ.get("VT_API_KEY")
 VT_BASE_URL = "https://www.virustotal.com/api/v3"
@@ -694,7 +702,7 @@ def admin_panel():
         'safe_files': len([i for i in received_items if i.get('vt_stats', {}).get('malicious', 0) == 0 and i.get('vt_status') == 'completed']),
         'analyzing': len([i for i in received_items if i.get('vt_status') in ['queued', 'in_progress']])
     }
-    return render_template("admin.html", stats=stats, items=received_items)
+    return render_template("admin.html", stats=stats, items=received_items, username=session.get('username'), picture=session.get('picture'))
 
 
 @app.route("/")
@@ -703,13 +711,108 @@ def index():
     for item in received_items:
         if item.get("vt_status") in {"queued", "in_progress"}:
             _vt_check_analysis(item)
-    return render_template("index.html", items=received_items, vt_enabled=bool(VT_API_KEY), username=session.get('username'), is_admin=session.get('is_admin', False))
+    return render_template("index.html", items=received_items, vt_enabled=bool(VT_API_KEY), username=session.get('username'), is_admin=session.get('is_admin', False), picture=session.get('picture'))
 
 
 @app.route("/uploads/<path:filename>")
 @login_required
 def uploads(filename):
     return send_from_directory(UPLOAD_DIR, filename, as_attachment=True)
+
+
+# OAuth Routes
+@app.route("/auth/google")
+def auth_google():
+    """Initiate Google OAuth flow"""
+    if not oauth_handler.google:
+        flash("Google OAuth is not configured. Check your .env file.", "error")
+        return redirect(url_for('login'))
+    
+    # Authorize redirect - Authlib will use current request to build redirect_uri
+    return oauth_handler.google.authorize_redirect(url_for('oauth_callback', _external=True))
+
+
+@app.route("/auth/callback")
+def oauth_callback():
+    """Handle OAuth callback from Google"""
+    error = request.args.get('error')
+    
+    if error:
+        flash(f"Authentication failed: {error}", "error")
+        return redirect(url_for('login'))
+    
+    if not oauth_handler.google:
+        flash("Google OAuth is not configured", "error")
+        return redirect(url_for('login'))
+    
+    try:
+        print("DEBUG: OAuth callback started")
+        
+        # Let Authlib handle the token exchange
+        token = oauth_handler.google.authorize_access_token()
+        print(f"DEBUG: Got token from Google: {type(token)}")
+        
+        # Parse user info from token - uses ID token or token dict directly
+        user_info = parse_token(token)
+        print(f"DEBUG: Parsed user info: {user_info}")
+        
+        google_id = user_info.get('google_id')
+        email = user_info.get('email')
+        name = user_info.get('name')
+        picture = user_info.get('picture')
+        
+        print(f"DEBUG: Extracted - google_id: {google_id}, email: {email}, name: {name}")
+        
+        if not google_id or not email:
+            print(f"ERROR: Missing required user info!")
+            print(f"  google_id: {google_id}")
+            print(f"  email: {email}")
+            print(f"  Full user_info: {user_info}")
+            flash("Failed to retrieve user information from Google. Make sure to grant permission.", "error")
+            return redirect(url_for('login'))
+        
+        # Store or retrieve oauth user
+        if google_id not in oauth_users:
+            oauth_users[google_id] = {
+                'email': email,
+                'name': name,
+                'picture': picture,
+                'created_at': datetime.now().isoformat()
+            }
+            print(f"DEBUG: Created new OAuth user: {google_id}")
+        else:
+            print(f"DEBUG: OAuth user already exists: {google_id}")
+        
+        # Create session - CRITICAL: must set username for login_required decorator
+        session['user_id'] = google_id
+        session['username'] = name or email  # login_required checks for this
+        session['email'] = email
+        session['picture'] = picture
+        session['auth_provider'] = 'google'
+        session['is_admin'] = False  # OAuth users are never admin
+        
+        print(f"DEBUG: Session set - username: {session.get('username')}")
+        print(f"DEBUG: Session keys: {list(session.keys())}")
+        
+        # Clear CSRF token
+        _ensure_csrf_token()
+        
+        print("DEBUG: About to redirect to index")
+        return redirect(url_for('index'))
+    
+    except Exception as e:
+        print(f"ERROR in OAuth callback: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        flash(f"Authentication error: {str(e)}", "error")
+        return redirect(url_for('login'))
+
+
+@app.route("/auth/logout")
+def oauth_logout():
+    """Logout from OAuth session"""
+    session.clear()
+    return redirect(url_for('login'))
 
 
 if __name__ == "__main__":
