@@ -8,6 +8,7 @@ const cors = require('cors');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const crypto = require('crypto');
+const swaggerUi = require('swagger-ui-express');
 
 // Import configuration
 const { pool, initDatabase } = require('./config/db');
@@ -19,6 +20,9 @@ const { timingSafeEqual, parsePositiveInt } = require('./utils/security');
 
 // Import logger
 const { logger, logRequest, logServiceInit } = require('./utils/logger');
+
+// Import Swagger spec
+const swaggerSpec = require('./config/swagger');
 
 // Import routes
 const authRoutes = require('./routes/authRoutes');
@@ -174,6 +178,31 @@ const scanLimiter = rateLimit({
 
 app.use('/api', apiLimiter);
 app.use('/api/scan', scanLimiter);
+
+// ============================================
+// SWAGGER API DOCUMENTATION
+// ============================================
+
+// Swagger UI setup
+app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec, {
+  swaggerOptions: {
+    url: '/api-docs/swagger.json',
+    deepLinking: true,
+    display: {
+      docExpansion: 'list',
+      operationsSorter: 'alpha',
+      tagsSorter: 'alpha',
+      defaultModelsExpandDepth: 1
+    }
+  },
+  customCss: '.topbar { background-color: #1f2937; } .swagger-ui .topbar-wrapper { background-color: #1f2937; }'
+}));
+
+// Expose Swagger JSON
+app.get('/api-docs/swagger.json', (req, res) => {
+  res.setHeader('Content-Type', 'application/json');
+  res.send(swaggerSpec);
+});
 
 // ============================================
 // ROUTES
