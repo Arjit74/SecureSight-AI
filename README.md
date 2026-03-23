@@ -356,3 +356,333 @@ If extension cannot connect to backend:
 
 The script `scripts/generate_readmes.ps1` is used for folder-level README generation.
 Use it when folder contents change, then keep this root guide focused on end-to-end architecture and operations.
+
+## 17) Detailed Module-Level Breakdown
+
+### 17.1 Backend Internal Modules
+
+#### URL Processing Pipeline
+
+* Input sanitation
+* Protocol normalization (`http` → `https` fallback handling)
+* Domain extraction
+* Query parameter analysis
+* Entropy calculation for suspicious strings
+
+#### Feature Extraction Includes
+
+* URL length
+* Special character ratio
+* Subdomain depth
+* Presence of IP address instead of domain
+* Suspicious keywords (login, verify, secure, update)
+
+#### Heuristics Engine
+
+* Rule-based scoring system
+* Weighted signals:
+
+  * Blacklist match → high weight
+  * Suspicious TLD → medium weight
+  * Random string patterns → medium weight
+* Combines with ML output
+
+---
+
+### 17.2 ML Bridge Deep Dive
+
+#### Responsibilities
+
+* Model loading
+* Feature scaling
+* Prediction inference
+* Confidence scoring
+
+#### Failure Handling
+
+* If Python script fails:
+
+  * Return fallback prediction
+  * Log error for observability
+* Timeout protection implemented
+
+#### Model Types Supported
+
+* Logistic Regression (baseline)
+* Random Forest
+* Gradient Boosting (future-ready)
+
+---
+
+### 17.3 Flask App Internal Flow
+
+#### Authentication Flow
+
+1. User submits login form
+2. CSRF token validated
+3. Password hash checked
+4. Session created
+5. Role assigned (admin/user)
+
+#### File Upload Pipeline
+
+1. File received
+2. Filename sanitized
+3. Stored in uploads directory
+4. Hash (SHA256) generated
+5. Sent to VirusTotal
+6. Polling loop initiated
+
+---
+
+### 17.4 Telegram Bot Workflow
+
+* Receives file via chat
+* Sends to Flask backend
+* Polls status endpoint
+* Sends result summary to user
+* Provides export links
+
+---
+
+## 18) Database Schema Design (PostgreSQL)
+
+### Tables Overview
+
+#### scans
+
+| Column     | Type      | Description    |
+| ---------- | --------- | -------------- |
+| id         | UUID      | Unique scan ID |
+| url        | TEXT      | Submitted URL  |
+| verdict    | VARCHAR   | Safe/Malicious |
+| score      | FLOAT     | Risk score     |
+| created_at | TIMESTAMP | Scan time      |
+
+---
+
+#### features
+
+| Column       | Type  | Description |
+| ------------ | ----- | ----------- |
+| id           | UUID  | Feature ID  |
+| scan_id      | UUID  | Reference   |
+| feature_name | TEXT  | Name        |
+| value        | FLOAT | Value       |
+
+---
+
+#### logs
+
+| Column    | Type      | Description |
+| --------- | --------- | ----------- |
+| id        | UUID      | Log ID      |
+| message   | TEXT      | Log message |
+| level     | VARCHAR   | INFO/ERROR  |
+| timestamp | TIMESTAMP | Time        |
+
+---
+
+## 19) API Request/Response Examples
+
+### URL Scan Request
+
+```json
+POST /api/scan/url
+{
+  "url": "http://example.com/login"
+}
+```
+
+### Response
+
+```json
+{
+  "verdict": "malicious",
+  "score": 0.87,
+  "features": {
+    "length": 120,
+    "entropy": 4.5
+  }
+}
+```
+
+---
+
+## 20) Error Handling Strategy
+
+### Backend Errors
+
+* 400 → Invalid input
+* 401 → Unauthorized
+* 429 → Rate limit exceeded
+* 500 → Internal error
+
+### Flask Errors
+
+* CSRF failure → 403
+* Login blocked → 429
+* File too large → 413
+
+---
+
+## 21) Logging and Monitoring
+
+### Logging Levels
+
+* INFO → Normal operations
+* WARN → Suspicious activity
+* ERROR → Failures
+
+### Suggested Tools
+
+* Winston (Node.js logging)
+* ELK Stack (future)
+* Prometheus + Grafana
+
+---
+
+## 22) Performance Optimization
+
+### Backend
+
+* Caching scan results
+* Async processing
+* DB indexing on scan_id
+
+### Flask
+
+* Background polling instead of blocking
+* File size limits
+
+---
+
+## 23) Security Enhancements (Future Scope)
+
+* JWT-based authentication
+* OAuth integration
+* File sandbox execution
+* Real-time threat intelligence APIs
+
+---
+
+## 24) Browser Extension Future Improvements
+
+* Manifest v3 migration
+* Real-time URL blocking
+* Phishing page detection overlay
+* User feedback loop
+
+---
+
+## 25) ML Improvements Roadmap
+
+* Deep learning models
+* NLP-based URL analysis
+* Ensemble learning
+* Continuous retraining pipeline
+
+---
+
+## 26) Deployment Strategy
+
+### Recommended Setup
+
+* Backend → Docker container
+* Flask → Gunicorn + Nginx
+* Database → Managed PostgreSQL
+* ML → Separate service container
+
+---
+
+## 27) CI/CD Pipeline
+
+Steps:
+
+1. Code push
+2. Run tests
+3. Build Docker images
+4. Deploy to server
+5. Health check
+
+---
+
+## 28) Risk Analysis
+
+| Risk             | Mitigation       |
+| ---------------- | ---------------- |
+| ML model failure | Fallback system  |
+| API abuse        | Rate limiting    |
+| Data leak        | Secure headers   |
+| Bot misuse       | Token validation |
+
+---
+
+## 29) Testing Strategy
+
+### Unit Testing
+
+* Feature extraction
+* API endpoints
+
+### Integration Testing
+
+* Backend + ML bridge
+* Flask + VirusTotal
+
+### Manual Testing
+
+* Extension UI
+* Telegram bot
+
+---
+
+## 30) Real-World Use Cases
+
+* Phishing detection
+* Malware file analysis
+* Enterprise security dashboards
+* Browser protection tools
+
+---
+
+## 31) Advantages of This System
+
+* Modular architecture
+* Scalable design
+* Multi-platform support
+* ML + heuristic hybrid detection
+
+---
+
+## 32) Limitations
+
+* File scan backend not implemented
+* ML model accuracy depends on dataset
+* Extension limited by browser policies
+
+---
+
+## 33) Future Scope Summary
+
+* Full SIEM integration
+* Real-time streaming analysis
+* AI-powered threat intelligence
+* Cloud-native scaling
+
+---
+
+## 34) Conclusion
+
+SecureSight-AI represents a **complete cybersecurity ecosystem** combining:
+
+* Backend intelligence
+* Machine learning
+* User-facing tools
+* Automation workflows
+
+It is designed to be:
+
+* Scalable
+* Secure
+* Extensible
