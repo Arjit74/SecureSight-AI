@@ -64,6 +64,52 @@ describe('API safety rails', () => {
     expect(response.status).toBe(400);
     expect(response.body.error).toMatch(/HTTP\/HTTPS/);
   });
+
+  test('returns unified contract from /api/scan/url', async () => {
+    const response = await request(app)
+      .post('/api/scan/url')
+      .send({ url: 'https://example.com/login' });
+
+    expect(response.status).toBe(200);
+    expect(response.body).toHaveProperty('status', 'completed');
+    expect(response.body).toHaveProperty('scan_id');
+    expect(response.body).toHaveProperty('scanId');
+    expect(response.body).toHaveProperty('score');
+    expect(response.body).toHaveProperty('risk_score');
+    expect(response.body).toHaveProperty('verdict');
+    expect(response.body).toHaveProperty('phases');
+    expect(response.body.scanId).toBe(response.body.scan_id);
+  });
+
+  test('supports extension compatibility route /api/scan', async () => {
+    const response = await request(app)
+      .post('/api/scan')
+      .send({ url: 'https://example.com' });
+
+    expect(response.status).toBe(200);
+    expect(response.body).toHaveProperty('status', 'completed');
+    expect(response.body).toHaveProperty('score');
+    expect(response.body).toHaveProperty('verdict');
+  });
+
+  test('rejects bulk scans above 50 URLs', async () => {
+    const urls = Array.from({ length: 51 }, (_, index) => `https://example${index}.com`);
+
+    const response = await request(app)
+      .post('/api/scan/bulk')
+      .send({ urls });
+
+    expect(response.status).toBe(400);
+    expect(response.body).toHaveProperty('error');
+    expect(response.body.error).toMatch(/Maximum 50 URLs/i);
+  });
+
+  test('returns not found or db unavailable for unknown scan result', async () => {
+    const response = await request(app).get('/api/scan/result/non-existent-scan-id');
+
+    expect([404, 503]).toContain(response.status);
+    expect(response.body).toHaveProperty('error');
+  });
 });
 
 afterAll(async () => {

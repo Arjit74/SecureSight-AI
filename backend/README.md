@@ -317,9 +317,23 @@ Public / Core
 🔍 Scanning
 | Method | Route            | Description                 |
 | ------ | ---------------- | --------------------------- |
+| POST   | `/api/scan`      | Compatibility alias for extension clients |
 | POST   | `/api/scan/url`  | Analyze single URL          |
 | POST   | `/api/scan/bulk` | Analyze multiple URLs (≤50) |
 | POST   | `/api/scan/file` | ⚠️ Placeholder (501)        |
+| GET    | `/api/scan/result/:scanId` | Compatibility lookup by scan id |
+
+Unified response contract (`/api/scan`, `/api/scan/url`, `/api/scan/result/:scanId`):
+
+- `status`: `completed`
+- `scan_id` and `scanId` (same value)
+- `url`, `verdict`
+- `score` (safety score 0-100)
+- `risk_score` and `riskScore` (risk score 0-100)
+- `riskLevel` (`LOW`, `LOW-MEDIUM`, `MEDIUM`, `HIGH`, `CRITICAL`)
+- `confidence`, `confidence_percent`
+- `phases` object for UI rendering
+- `recommendations`, `reasoning`
 
 
 📊 Data & Insights
