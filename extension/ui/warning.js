@@ -14,18 +14,26 @@ let decisionData = null;
 
 // ========== API CONFIGURATION ==========
 const API_CONFIG = {
-  LOCAL_API: 'http://localhost:3001',
+  LOCAL_API: 'http://localhost:3000',
   REMOTE_API: 'https://guardianlink-backend.onrender.com',
   WEBSITE_API: 'https://guardianlink-backend.onrender.com' // Will be updated
 };
 
+async function fetchWithTimeout(url, options = {}, timeoutMs = 2000) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
 // Detect and set the correct API endpoint
 async function detectAPI() {
   try {
-    const response = await Promise.race([
-      fetch(`${API_CONFIG.LOCAL_API}/api/health`, { timeout: 2000 }),
-      new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), 2000))
-    ]);
+    const response = await fetchWithTimeout(`${API_CONFIG.LOCAL_API}/api/health`, {}, 2000);
     
     if (response.ok) {
       API_CONFIG.WEBSITE_API = API_CONFIG.LOCAL_API;
@@ -423,18 +431,45 @@ async function fetchCompleteScanDetails() {
     debugLog(`Fetching complete scan details for scanId: ${decisionData.scanId}`);
     
     const apiUrl = await detectAPI();
-    const response = await fetch(`${apiUrl}/api/scan/result/${decisionData.scanId}`);
-    
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}`);
+    let completeData = null;
+    let lastError = null;
+
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      try {
+        const response = await fetchWithTimeout(
+          `${apiUrl}/api/scan/result/${decisionData.scanId}`,
+          {},
+          5000
+        );
+
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+
+        completeData = await response.json();
+        break;
+      } catch (error) {
+        lastError = error;
+        if (attempt < 3) {
+          // Brief linear backoff to avoid hammering backend.
+          await new Promise((resolve) => setTimeout(resolve, 400 * attempt));
+        }
+      }
     }
-    
-    const completeData = await response.json();
+
+    if (!completeData) {
+      throw lastError || new Error('Failed to fetch complete scan details');
+    }
     
     if (completeData.status === 'completed') {
       // Merge complete data with existing decision data
       decisionData = {
         ...decisionData,
+        score: typeof completeData.score === 'number' ? completeData.score : decisionData.score,
+        riskScore: typeof completeData.risk_score === 'number' ? completeData.risk_score : decisionData.riskScore,
+        riskLevel: completeData.riskLevel || decisionData.riskLevel,
+        reasoning: completeData.reasoning || decisionData.reasoning,
+        recommendations: completeData.recommendations || decisionData.recommendations,
         phases: completeData.phases,
         totalScore: completeData.totalScore,
         maxTotalScore: completeData.maxTotalScore,
@@ -445,11 +480,17 @@ async function fetchCompleteScanDetails() {
           ...completeData.details
         }
       };
+
+      decisionData.riskLevel = calculateRiskLevel(decisionData.score || 0);
       
       debugLog("✅ Successfully fetched complete scan details");
     }
   } catch (error) {
     console.error("Failed to fetch complete scan details:", error);
+    const riskDescription = document.getElementById('riskDescription');
+    if (riskDescription) {
+      riskDescription.textContent = 'Detailed checks are temporarily unavailable. Showing core verdict only.';
+    }
   }
 }
 

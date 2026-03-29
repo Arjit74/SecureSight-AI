@@ -9,7 +9,7 @@ console.log('🛡️ GuardianLink v2.0 Background Worker Ready');
 // ========== GLOBAL STATE ==========
 const CONFIG = {
   WEBSITE_API: 'https://guardianlink-backend.onrender.com', // Will be updated after local check
-  LOCAL_API: 'http://localhost:3001',
+  LOCAL_API: 'http://localhost:3000',
   REMOTE_API: 'https://guardianlink-backend.onrender.com',
   BLOCK_TIMEOUT: 30000,
   POLL_INTERVAL: 1500,
@@ -17,13 +17,27 @@ const CONFIG = {
   EXTENSION_ID: browser.runtime.id
 };
 
+function getPollDelayMs(attempt) {
+  const base = CONFIG.POLL_INTERVAL;
+  const multiplier = Math.min(Math.pow(1.35, Math.max(attempt - 1, 0)), 4);
+  return Math.round(base * multiplier);
+}
+
+async function fetchWithTimeout(url, options = {}, timeoutMs = 2000) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
 // ========== DETECT LOCAL BACKEND ==========
 async function detectAndSetAPI() {
   try {
-    const healthResponse = await Promise.race([
-      fetch(`${CONFIG.LOCAL_API}/api/health`, { timeout: 2000 }),
-      new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), 2000))
-    ]);
+    const healthResponse = await fetchWithTimeout(`${CONFIG.LOCAL_API}/api/health`, {}, 2000);
     
     if (healthResponse.ok) {
       CONFIG.WEBSITE_API = CONFIG.LOCAL_API;
@@ -395,7 +409,7 @@ async function startURLScan(url, tabId) {
     const timeoutId = setTimeout(() => controller.abort(), 15000); // 15 second timeout
     
     try {
-      const response = await fetch(`${CONFIG.WEBSITE_API}/api/scan`, {
+      const response = await fetch(`${CONFIG.WEBSITE_API}/api/scan/url`, {
         method: 'POST',
         headers: { 
           'Content-Type': 'application/json',
@@ -416,7 +430,7 @@ async function startURLScan(url, tabId) {
       }
       
       const scanData = await response.json();
-      const scanId = scanData.scanId;
+      const scanId = scanData.scanId || scanData.scan_id;
       const requestTime = Date.now() - scanStartTime;
       
       console.log(`📋 Backend scan initiated: ${scanId} (request time: ${requestTime}ms)`);
@@ -430,6 +444,15 @@ async function startURLScan(url, tabId) {
           timestamp: Date.now()
         });
         // Skip polling and go directly to completion
+        await completeScan(tabId, url, scanData);
+        return;
+      }
+
+      if (scanData.status === 'completed') {
+        state.localScanCache.set(url, {
+          result: scanData,
+          timestamp: Date.now()
+        });
         await completeScan(tabId, url, scanData);
         return;
       }
@@ -482,7 +505,11 @@ async function pollForScanResults(scanId, url, tabId, attempt = 1) {
   try {
     console.log(`📊 Polling scan ${scanId} (attempt ${attempt}/${CONFIG.MAX_POLL_ATTEMPTS})`);
     
-    const response = await fetch(`${CONFIG.WEBSITE_API}/api/scan/result/${scanId}`);
+    const response = await fetchWithTimeout(
+      `${CONFIG.WEBSITE_API}/api/scan/result/${scanId}`,
+      {},
+      6000
+    );
     const pollTime = Date.now() - pollStartTime;
     
     if (!response.ok) {
@@ -532,8 +559,7 @@ async function pollForScanResults(scanId, url, tabId, attempt = 1) {
         // Scanner page not ready yet, that's OK
       }
       
-      // Adaptive polling: shorter interval for first attempts, longer for later
-      const pollDelay = attempt < 5 ? CONFIG.POLL_INTERVAL : CONFIG.POLL_INTERVAL * 2;
+      const pollDelay = getPollDelayMs(attempt);
       
       // Poll again
       setTimeout(() => {
@@ -554,9 +580,10 @@ async function pollForScanResults(scanId, url, tabId, attempt = 1) {
     
     // Retry or give up
     if (attempt < CONFIG.MAX_POLL_ATTEMPTS) {
+      const pollDelay = getPollDelayMs(attempt);
       setTimeout(() => {
         pollForScanResults(scanId, url, tabId, attempt + 1);
-      }, CONFIG.POLL_INTERVAL);
+      }, pollDelay);
     } else {
       console.error(`❌ Giving up on scan ${scanId}`);
       await completeScan(tabId, url, {
@@ -680,7 +707,7 @@ async function getCompleteScanDetails(scanId) {
 // ========== COMPLETE SCAN ==========
 async function completeScan(tabId, url, result) {
   const verdict = result.verdict || 'ALLOW';
-  const score = result.score || 100;
+  const score = typeof result.score === 'number' ? result.score : 100;
   
   console.log(`📋 Final verdict: ${verdict} (Score: ${score}) for ${url}`);
   
@@ -711,7 +738,7 @@ async function completeScan(tabId, url, result) {
     blockedInfo.status = 'completed';
     blockedInfo.verdict = verdict;
     blockedInfo.score = score;
-    blockedInfo.scanId = result.scanId; // Store scanId for fetching details
+    blockedInfo.scanId = result.scanId || result.scan_id; // Store scanId for fetching details
   }
   
   // Check if tab still exists
@@ -745,7 +772,7 @@ async function completeScan(tabId, url, result) {
     
   } else if (verdict === 'WARN' || verdict === 'BLOCK') {
     // Get complete scan details from backend
-    const completeDetails = await getCompleteScanDetails(result.scanId);
+    const completeDetails = await getCompleteScanDetails(result.scanId || result.scan_id);
     
     console.log(`⚠️ ${verdict} verdict, redirecting to warning page`);
     await redirectToWarningPage(tabId, url, verdict, score, completeDetails || result);
