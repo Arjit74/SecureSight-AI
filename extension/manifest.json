@@ -1,0 +1,61 @@
+{
+  "manifest_version": 2,
+  "name": "GuardianLink - URL Security Shield",
+  "version": "2.0.0",
+  "description": "Real-time malicious URL detection with complete page blocking until security scan completes",
+  "permissions": [
+    "storage",
+    "tabs",
+    "activeTab",
+    "webNavigation",
+    "notifications",
+    "contextMenus",
+    "<all_urls>"
+  ],
+  "background": {
+    "scripts": ["notification-config.js", "background.js"],
+    "persistent": true
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["purify.min.js", "content.js"],
+      "run_at": "document_start"
+    }
+  ],
+  "browser_action": {
+    "default_popup": "ui/dashboard.html",
+    "default_title": "GuardianLink Dashboard"
+  },
+  "icons": {
+    "48": "assets/cropped.jpg",
+    "128": "assets/icon-128.png"
+  },
+  "web_accessible_resources": [
+    "ui/warning.html",
+    "ui/scanner.html",
+    "ui/report.html",
+    "ui/scanner.js",
+    "ui/report.js",
+    "ui/report.css",
+    "purify.min.js",
+    "utils/sanitize.js",
+    "lib/chart.min.js",
+    "lib/html2canvas.min.js",
+    "lib/jspdf.umd.min.js",
+    "assets/*"
+  ],
+  "content_security_policy": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'; style-src 'self' 'unsafe-inline'",
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "{a7f4c3e2-9b1d-4e5f-8c2a-b9d3e1f5c7a4}",
+      "strict_min_version": "140.0",
+      "data_collection_permissions": {
+        "required": ["none"]
+      }
+    },
+    "gecko_android": {
+      "strict_min_version": "142.0"
+    }
+  }
+}

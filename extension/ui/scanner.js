@@ -86,8 +86,8 @@ function initializePhases() {
     { id: 'whitelist', name: 'Whitelist Check', status: 'pending' },
     { id: 'blacklist', name: 'Blacklist Scan', status: 'pending' },
     { id: 'reputation', name: 'Domain Reputation', status: 'pending' },
-    { id: 'virustotal', name: 'VirusTotal Analysis', status: 'pending' },
-    { id: 'backend', name: 'Backend Analysis', status: 'pending' },
+    { id: 'virustotal', name: 'Signature Analysis', status: 'pending' },
+    { id: 'backend', name: 'ML Model Analysis', status: 'pending' },
     { id: 'final', name: 'Final Verdict', status: 'pending' }
   ];
   

@@ -94,14 +94,14 @@ function getRiskIndicatorClass(verdict) {
 // Security check icons mapping
 function getCheckIcon(checkName, status) {
   const icons = {
-    'virusTotal': status === 'danger' ? '🦠' : '✅',
+    'virusTotal': status === 'danger' ? '📋' : '✅',
     'abuseIPDB': status === 'danger' ? '⚠️' : '✅',
     'ssl': status === 'safe' ? '🔒' : '⚠️',
     'domainAge': status === 'safe' ? '📅' : '⚠️',
     'content': status === 'safe' ? '📝' : '⚠️',
     'redirects': status === 'safe' ? '↪️' : '⚠️',
     'securityHeaders': status === 'safe' ? '🛡️' : '⚠️',
-    'googleSafeBrowsing': status === 'safe' ? '🔍' : '🦠',
+    'googleSafeBrowsing': status === 'safe' ? '🔍' : '⚠️',
     'heuristics': status === 'safe' ? '🧠' : '⚠️'
   };
   
@@ -111,14 +111,14 @@ function getCheckIcon(checkName, status) {
 // Format check display name
 function formatCheckName(checkName) {
   const names = {
-    'virusTotal': 'VirusTotal',
-    'abuseIPDB': 'AbuseIPDB',
+    'virusTotal': 'Signature Analysis',
+    'abuseIPDB': 'Reputation Analysis',
     'ssl': 'SSL Certificate',
     'domainAge': 'Domain Age',
     'content': 'Content Analysis',
     'redirects': 'Redirect Analysis',
     'securityHeaders': 'Security Headers',
-    'googleSafeBrowsing': 'Google Safe Browsing',
+    'googleSafeBrowsing': 'Safe Browsing Analysis',
     'heuristics': 'Heuristic Rules'
   };
   
