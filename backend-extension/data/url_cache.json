@@ -1,0 +1,285 @@
+{
+  "http://42.242.128.121:50917/bin.sh": {
+    "verdict": "MALICIOUS",
+    "confidence": 0.44,
+    "metadata": {
+      "riskLevel": "CRITICAL",
+      "overallStatus": "danger",
+      "sources": [
+        "virusTotal",
+        "abuseIPDB",
+        "ssl",
+        "content",
+        "redirects",
+        "securityHeaders",
+        "googleSafeBrowsing",
+        "domainAge",
+        "heuristics"
+      ],
+      "phases": {
+        "virusTotal": {
+          "name": "VirusTotal Analysis",
+          "score": 10,
+          "maxScore": 25,
+          "status": "warning",
+          "partial": true,
+          "available": false,
+          "reason": "Check completed"
+        },
+        "abuseIPDB": {
+          "name": "AbuseIPDB Check",
+          "error": "Invalid or expired API key",
+          "score": 15,
+          "maxScore": 15,
+          "status": "warning",
+          "available": false
+        },
+        "ssl": {
+          "name": "SSL Certificate",
+          "valid": false,
+          "error": "Not using HTTPS",
+          "score": 0,
+          "maxScore": 15,
+          "status": "danger"
+        },
+        "content": {
+          "name": "Content Analysis",
+          "score": 12,
+          "maxScore": 15,
+          "status": "safe",
+          "partial": true,
+          "reason": "Content analysis unavailable"
+        },
+        "redirects": {
+          "name": "Redirect Analysis",
+          "score": 10,
+          "maxScore": 10,
+          "status": "safe",
+          "partial": true,
+          "reason": "Redirect analysis unavailable"
+        },
+        "securityHeaders": {
+          "name": "Security Headers",
+          "score": 0,
+          "maxScore": 10,
+          "status": "danger",
+          "findings": [
+            "✗ Missing strict-transport-security",
+            "✗ Missing x-content-type-options",
+            "✗ Missing x-frame-options",
+            "✗ Missing x-xss-protection",
+            "✗ Missing content-security-policy",
+            "✗ Missing referrer-policy",
+            "✗ Missing permissions-policy"
+          ]
+        },
+        "googleSafeBrowsing": {
+          "name": "Google Safe Browsing",
+          "safe": true,
+          "threats": "none",
+          "matchCount": 0,
+          "score": 15,
+          "maxScore": 15,
+          "status": "safe"
+        },
+        "domainAge": {
+          "name": "Domain Analysis (Heuristic)",
+          "domain": "42.242.128.121",
+          "score": 0,
+          "maxScore": 10,
+          "status": "danger",
+          "warnings": [
+            "Hostname is an IP address literal - suspicious"
+          ],
+          "isHeuristic": true
+        },
+        "heuristics": {
+          "name": "Heuristic Rules",
+          "matched": [
+            {
+              "id": "url:ip_literal",
+              "score": 15,
+              "description": "URL uses raw IP instead of domain"
+            },
+            {
+              "id": "ssl:no_https",
+              "score": 30,
+              "description": "URL does not use HTTPS"
+            }
+          ],
+          "totalSuspicion": 45,
+          "score": 0,
+          "maxScore": 25,
+          "status": "danger"
+        }
+      },
+      "verdict": "BLOCK",
+      "score": 44,
+      "totalScore": 62,
+      "maxTotalScore": 140
+    },
+    "timestamp": 1774793336890,
+    "originalUrl": "http://42.242.128.121:50917/bin.sh",
+    "canonicalUrl": "http://42.242.128.121:50917/bin.sh",
+    "riskLevel": "CRITICAL",
+    "overallStatus": "danger",
+    "sources": [
+      "virusTotal",
+      "abuseIPDB",
+      "ssl",
+      "content",
+      "redirects",
+      "securityHeaders",
+      "googleSafeBrowsing",
+      "domainAge",
+      "heuristics"
+    ]
+  },
+  "http://204.137.166.139:42101/i": {
+    "verdict": "MALICIOUS",
+    "confidence": 0.36,
+    "metadata": {
+      "riskLevel": "CRITICAL",
+      "overallStatus": "danger",
+      "sources": [
+        "virusTotal",
+        "abuseIPDB",
+        "ssl",
+        "content",
+        "redirects",
+        "securityHeaders",
+        "googleSafeBrowsing",
+        "domainAge",
+        "heuristics"
+      ],
+      "phases": {
+        "virusTotal": {
+          "name": "Signature Analysis",
+          "score": 10,
+          "maxScore": 25,
+          "status": "warning",
+          "partial": true,
+          "available": false,
+          "reason": "Check completed"
+        },
+        "abuseIPDB": {
+          "name": "Reputation Analysis",
+          "error": "Invalid or expired API key",
+          "score": 15,
+          "maxScore": 15,
+          "status": "warning",
+          "available": false
+        },
+        "ssl": {
+          "name": "SSL Certificate",
+          "valid": false,
+          "error": "Not using HTTPS",
+          "score": 0,
+          "maxScore": 15,
+          "status": "danger"
+        },
+        "content": {
+          "name": "Content Analysis",
+          "score": 0,
+          "maxScore": 15,
+          "status": "danger",
+          "findings": [
+            "Suspicious phrase: \"login\"",
+            "Suspicious phrase: \"username\"",
+            "Suspicious phrase: \"password\"",
+            "Meta refresh redirect detected",
+            "JavaScript redirect detected",
+            "Potential obfuscated content detected"
+          ]
+        },
+        "redirects": {
+          "name": "Redirect Analysis",
+          "score": 10,
+          "maxScore": 10,
+          "status": "safe",
+          "partial": true,
+          "reason": "Redirect analysis unavailable"
+        },
+        "securityHeaders": {
+          "name": "Security Headers",
+          "score": 0,
+          "maxScore": 10,
+          "status": "danger",
+          "findings": [
+            "✗ Missing strict-transport-security",
+            "✗ Missing x-content-type-options",
+            "✗ Missing x-frame-options",
+            "✗ Missing x-xss-protection",
+            "✗ Missing content-security-policy",
+            "✗ Missing referrer-policy",
+            "✗ Missing permissions-policy"
+          ]
+        },
+        "googleSafeBrowsing": {
+          "name": "Safe Browsing Analysis",
+          "safe": true,
+          "threats": "none",
+          "matchCount": 0,
+          "score": 15,
+          "maxScore": 15,
+          "status": "safe"
+        },
+        "domainAge": {
+          "name": "Domain Analysis (Heuristic)",
+          "domain": "204.137.166.139",
+          "score": 0,
+          "maxScore": 10,
+          "status": "danger",
+          "warnings": [
+            "Hostname is an IP address literal - suspicious"
+          ],
+          "isHeuristic": true
+        },
+        "heuristics": {
+          "name": "Heuristic Rules",
+          "matched": [
+            {
+              "id": "url:ip_literal",
+              "score": 15,
+              "description": "URL uses raw IP instead of domain"
+            },
+            {
+              "id": "ssl:no_https",
+              "score": 30,
+              "description": "URL does not use HTTPS"
+            },
+            {
+              "id": "page:login_form",
+              "score": 20,
+              "description": "Page contains login form"
+            }
+          ],
+          "totalSuspicion": 65,
+          "score": 0,
+          "maxScore": 25,
+          "status": "danger"
+        }
+      },
+      "verdict": "BLOCK",
+      "score": 36,
+      "totalScore": 50,
+      "maxTotalScore": 140
+    },
+    "timestamp": 1774793826261,
+    "originalUrl": "http://204.137.166.139:42101/i",
+    "canonicalUrl": "http://204.137.166.139:42101/i",
+    "riskLevel": "CRITICAL",
+    "overallStatus": "danger",
+    "sources": [
+      "virusTotal",
+      "abuseIPDB",
+      "ssl",
+      "content",
+      "redirects",
+      "securityHeaders",
+      "googleSafeBrowsing",
+      "domainAge",
+      "heuristics"
+    ]
+  }
+}
