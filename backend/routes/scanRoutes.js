@@ -135,6 +135,22 @@ router.get('/history', authMiddleware, scanController.getScanHistory);
 
 /**
  * @swagger
+ * /api/scan/history/search:
+ *   get:
+ *     tags:
+ *       - Scanning
+ *     summary: Search scan history
+ *     description: Filter historical scans by verdict, query string, and date range
+ *     security:
+ *       - BearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Filtered scan history
+ */
+router.get('/history/search', authMiddleware, scanController.searchScanHistory);
+
+/**
+ * @swagger
  * /api/scan/history/{scanId}:
  *   get:
  *     tags:
@@ -165,6 +181,54 @@ router.get('/history', authMiddleware, scanController.getScanHistory);
  *         description: Server error
  */
 router.get('/history/:scanId', authMiddleware, scanController.getScanById);
+
+/**
+ * @swagger
+ * /api/scan/analytics:
+ *   get:
+ *     tags:
+ *       - Scanning
+ *     summary: Get scan analytics
+ *     description: Summary metrics and timeline for recent scan activity
+ *     security:
+ *       - BearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Scan analytics payload
+ */
+router.get('/analytics', authMiddleware, scanController.getScanAnalytics);
+
+/**
+ * @swagger
+ * /api/scan/domains/insights:
+ *   get:
+ *     tags:
+ *       - Scanning
+ *     summary: Get domain security insights
+ *     description: Returns highest-risk domains observed in recent scan history
+ *     security:
+ *       - BearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Domain insights payload
+ */
+router.get('/domains/insights', authMiddleware, scanController.getDomainInsights);
+
+/**
+ * @swagger
+ * /api/scan/rescan/{scanId}:
+ *   post:
+ *     tags:
+ *       - Scanning
+ *     summary: Rescan an existing scan URL
+ *     description: Re-runs analysis for the URL referenced by an existing scan ID
+ *     security:
+ *       - BearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Rescan completed
+ */
+router.post('/rescan/:scanId', authMiddleware, scanController.rescanById);
 
 /**
  * @swagger
