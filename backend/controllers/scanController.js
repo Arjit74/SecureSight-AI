@@ -8,6 +8,19 @@ const { validateAndNormalizeUrl } = require('../utils/urlValidator');
 const { pool } = require('../config/db');
 const { parsePositiveInt } = require('../utils/security');
 const { getMLService } = require('../services/mlService');
+const {
+  summarizeScans,
+  buildTimelineRows,
+  compareScans
+} = require('../lib/scanAnalytics');
+
+function extractDomain(inputUrl) {
+  try {
+    return new URL(inputUrl).hostname.toLowerCase();
+  } catch {
+    return null;
+  }
+}
 
 /**
  * POST /api/scan/url
@@ -206,6 +219,245 @@ exports.getModelInfo = async (req, res) => {
         url: 'phishing + benign URLs',
         file: 'EMBER dataset recommended'
       }
+    });
+  } catch (error) {
+    return res.status(500).json({ error: error.message });
+  }
+};
+
+/**
+ * GET /api/scan/analytics
+ * Returns summary and timeline analytics for recent scans
+ */
+exports.getScanAnalytics = async (req, res) => {
+  try {
+    const sinceHours = parsePositiveInt(req.query.sinceHours, 24, 1, 24 * 30);
+    const bucket = sinceHours <= 72 ? 'hour' : 'day';
+
+    const summaryResult = await pool.query(
+      `SELECT verdict, confidence, risk_score, analysis_time_ms
+       FROM scans
+       WHERE created_at >= NOW() - ($1::text || ' hours')::interval`,
+      [String(sinceHours)]
+    );
+
+    const timelineResult = await pool.query(
+      `SELECT
+          date_trunc($1, created_at) AS bucket,
+          COUNT(*)::int AS total_scans,
+          COUNT(*) FILTER (WHERE verdict = 'ALLOW')::int AS allow_count,
+          COUNT(*) FILTER (WHERE verdict = 'WARN')::int AS warn_count,
+          COUNT(*) FILTER (WHERE verdict = 'BLOCK')::int AS block_count,
+          AVG(COALESCE(risk_score, 0))::float AS avg_risk_score,
+          AVG(COALESCE(confidence, 0))::float AS avg_confidence
+       FROM scans
+       WHERE created_at >= NOW() - ($2::text || ' hours')::interval
+       GROUP BY 1
+       ORDER BY 1 ASC`,
+      [bucket, String(sinceHours)]
+    );
+
+    return res.json({
+      window: {
+        since_hours: sinceHours,
+        bucket
+      },
+      summary: summarizeScans(summaryResult.rows),
+      timeline: buildTimelineRows(timelineResult.rows)
+    });
+  } catch (error) {
+    return res.status(500).json({ error: error.message });
+  }
+};
+
+/**
+ * GET /api/scan/history/search
+ * Search and filter scan history with verdict/date/domain criteria
+ */
+exports.searchScanHistory = async (req, res) => {
+  try {
+    const limit = parsePositiveInt(req.query.limit, 25, 1, 200);
+    const offset = parsePositiveInt(req.query.offset, 0, 0, 100000);
+    const verdict = typeof req.query.verdict === 'string' ? req.query.verdict.toUpperCase() : null;
+    const q = typeof req.query.q === 'string' ? req.query.q.trim() : '';
+    const from = typeof req.query.from === 'string' ? req.query.from : null;
+    const to = typeof req.query.to === 'string' ? req.query.to : null;
+
+    const where = [];
+    const values = [];
+
+    if (verdict && ['ALLOW', 'WARN', 'BLOCK'].includes(verdict)) {
+      values.push(verdict);
+      where.push(`verdict = $${values.length}`);
+    }
+
+    if (q) {
+      values.push(`%${q}%`);
+      where.push(`url ILIKE $${values.length}`);
+    }
+
+    if (from) {
+      values.push(from);
+      where.push(`created_at >= $${values.length}::timestamp`);
+    }
+
+    if (to) {
+      values.push(to);
+      where.push(`created_at <= $${values.length}::timestamp`);
+    }
+
+    const whereClause = where.length ? `WHERE ${where.join(' AND ')}` : '';
+
+    values.push(limit);
+    const limitPlaceholder = `$${values.length}`;
+    values.push(offset);
+    const offsetPlaceholder = `$${values.length}`;
+
+    const query = `
+      SELECT id, url, verdict, confidence, risk_score, model_used, analysis_time_ms, created_at
+      FROM scans
+      ${whereClause}
+      ORDER BY created_at DESC
+      LIMIT ${limitPlaceholder}
+      OFFSET ${offsetPlaceholder}
+    `;
+
+    const countValues = values.slice(0, values.length - 2);
+    const countQuery = `SELECT COUNT(*)::int AS total FROM scans ${whereClause}`;
+
+    const [result, countResult] = await Promise.all([
+      pool.query(query, values),
+      pool.query(countQuery, countValues)
+    ]);
+
+    return res.json({
+      filters: {
+        verdict,
+        q,
+        from,
+        to
+      },
+      total: countResult.rows[0]?.total || 0,
+      limit,
+      offset,
+      scans: result.rows
+    });
+  } catch (error) {
+    return res.status(500).json({ error: error.message });
+  }
+};
+
+/**
+ * GET /api/scan/domains/insights
+ * Returns top domains with security posture metrics
+ */
+exports.getDomainInsights = async (req, res) => {
+  try {
+    const limit = parsePositiveInt(req.query.limit, 15, 1, 100);
+    const minScans = parsePositiveInt(req.query.minScans, 2, 1, 500);
+    const sinceDays = parsePositiveInt(req.query.sinceDays, 30, 1, 365);
+
+    const result = await pool.query(
+      `SELECT url, verdict, risk_score, confidence
+       FROM scans
+       WHERE created_at >= NOW() - ($1::text || ' days')::interval`,
+      [String(sinceDays)]
+    );
+
+    const statsByDomain = new Map();
+
+    for (const row of result.rows) {
+      const domain = extractDomain(row.url);
+      if (!domain) {
+        continue;
+      }
+
+      if (!statsByDomain.has(domain)) {
+        statsByDomain.set(domain, {
+          domain,
+          scan_count: 0,
+          block_count: 0,
+          warn_count: 0,
+          allow_count: 0,
+          risk_sum: 0,
+          confidence_sum: 0
+        });
+      }
+
+      const item = statsByDomain.get(domain);
+      item.scan_count += 1;
+      item.risk_sum += Number(row.risk_score || 0);
+      item.confidence_sum += Number(row.confidence || 0);
+
+      if (row.verdict === 'BLOCK') item.block_count += 1;
+      else if (row.verdict === 'WARN') item.warn_count += 1;
+      else if (row.verdict === 'ALLOW') item.allow_count += 1;
+    }
+
+    const insights = Array.from(statsByDomain.values())
+      .filter((item) => item.scan_count >= minScans)
+      .map((item) => ({
+        domain: item.domain,
+        scan_count: item.scan_count,
+        block_count: item.block_count,
+        warn_count: item.warn_count,
+        allow_count: item.allow_count,
+        block_rate: Number(((item.block_count / item.scan_count) * 100).toFixed(2)),
+        avg_risk_score: Number((item.risk_sum / item.scan_count).toFixed(2)),
+        avg_confidence: Number((item.confidence_sum / item.scan_count).toFixed(4))
+      }))
+      .sort((a, b) => b.avg_risk_score - a.avg_risk_score || b.scan_count - a.scan_count)
+      .slice(0, limit);
+
+    return res.json({
+      window_days: sinceDays,
+      min_scans: minScans,
+      total_domains: insights.length,
+      domains: insights
+    });
+  } catch (error) {
+    return res.status(500).json({ error: error.message });
+  }
+};
+
+/**
+ * POST /api/scan/rescan/:scanId
+ * Re-run scan for URL from existing scan record
+ */
+exports.rescanById = async (req, res) => {
+  try {
+    const { scanId } = req.params;
+    const existing = await pool.query(
+      'SELECT id, url, verdict, confidence, risk_score FROM scans WHERE id = $1',
+      [scanId]
+    );
+
+    if (existing.rows.length === 0) {
+      return res.status(404).json({ error: 'Scan not found' });
+    }
+
+    const original = existing.rows[0];
+    const normalizedUrl = validateAndNormalizeUrl(original.url);
+    const latest = await scanUrl(normalizedUrl);
+
+    return res.json({
+      status: 'rescanned',
+      source_scan_id: original.id,
+      comparison: compareScans(
+        {
+          scan_id: original.id,
+          verdict: original.verdict,
+          confidence: Number(original.confidence || 0),
+          risk_score: Number(original.risk_score || 0)
+        },
+        {
+          scan_id: latest.scan_id,
+          verdict: latest.verdict,
+          confidence: latest.confidence,
+          risk_score: latest.risk_score
+        }
+      ),
+      latest_scan: latest
     });
   } catch (error) {
     return res.status(500).json({ error: error.message });
