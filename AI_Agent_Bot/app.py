@@ -445,6 +445,37 @@ def _report_to_csv_row(report):
     }
 
 
+@app.route("/telegram/webhook", methods=["POST"])
+def telegram_webhook():
+    """Handle Telegram webhook updates for bot.py"""
+    try:
+        from bot import app as bot_app
+        from telegram import Update
+        
+        data = request.get_json()
+        if not data:
+            return jsonify({"error": "No data"}), 400
+        
+        # Convert JSON to Update object and process
+        update = Update.de_json(data, None)
+        
+        # Process update asynchronously
+        import asyncio
+        try:
+            # Get or create event loop
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        
+        loop.run_until_complete(bot_app.process_update(update))
+        
+        return jsonify({"status": "ok"}), 200
+    except Exception as e:
+        print(f"Telegram webhook error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/receive", methods=["POST"])
 def receive():
     data = request.get_json(silent=True) or {}

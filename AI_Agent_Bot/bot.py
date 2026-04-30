@@ -341,9 +341,13 @@ async def handle_report(update, context):
     await msg.reply_document(document=data, filename=file_name, caption="📥 Exported report")
 
 
+# Create bot application
 app = ApplicationBuilder().token(BOT_TOKEN).build()
 app.add_handler(CommandHandler("report", handle_report))
 app.add_handler(CommandHandler("export", handle_report))
 app.add_handler(MessageHandler(filters.ALL, handle_message))
 
-app.run_polling()
+# Only run polling if not on a deployed environment
+# On Render/deployment, webhook is used instead
+if __name__ == "__main__" and os.environ.get("RENDER") != "true":
+    app.run_polling()
