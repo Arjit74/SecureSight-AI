@@ -13,3 +13,10 @@ __pycache__/
 # Virtual environment (if any)
 venv/
 .env/
+
+.env
+ __pycache__/
+ *.pyc
+ .DS_Store
+ uploads/*
+ !uploads/.gitkeep
