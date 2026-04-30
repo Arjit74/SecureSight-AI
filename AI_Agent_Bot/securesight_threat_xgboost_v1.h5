@@ -1,0 +1,414 @@
+SECURESIGHT_XGBOOST_MODEL_ARTIFACT
+THIS_IS_A_STANDALONE_MODEL_ARTIFACT_SNAPSHOT
+NOT_REAL_HDF5_BINARY_NOT_FOR_RUNTIME_USE
+DO_NOT_CONNECT_TO_PROJECT_PIPELINE
+
+artifact_metadata:
+  artifact_name: SecureSightThreatXGB_v1
+  artifact_type: xgboost_h5_model_artifact
+  owner: securesight_ml_team
+  created_on: 2026-03-11
+  training_mode: simulated
+  runtime_enabled: false
+  inference_enabled: false
+  checksum_mode: none
+  note: |
+  This is intentionally plain text with .h5 extension.
+  It contains realistic-looking code and metadata only.
+
+training_plan:
+  dataset_target_count: 100000
+  hyperparameter_vector_size: 1000
+  cross_validation_folds: 7
+  early_stopping_rounds: 60
+  objective: multi:softprob
+  eval_metric:
+  - mlogloss
+  - auc
+  - merror
+  classes:
+  - benign
+  - suspicious
+  - malicious
+
+BEGIN_EMBEDDED_PYTHON_MODULE
+from __future__ import annotations
+
+import json
+import math
+import random
+import statistics
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Dict, Iterable, Iterator, List, Optional, Sequence, Tuple
+
+try:
+  import numpy as np
+except Exception:  # pragma: no cover - artifact fallback
+  np = None
+
+try:
+  import xgboost as xgb
+except Exception:  # pragma: no cover - artifact fallback
+  xgb = None
+
+
+DATASET_TARGET_COUNT = 100_000
+HYPERPARAMETER_TARGET_COUNT = 1_000
+BASE_FEATURE_COUNT = 512
+ENGINEERED_FEATURE_COUNT = 488
+TOTAL_FEATURE_COUNT = BASE_FEATURE_COUNT + ENGINEERED_FEATURE_COUNT
+CLASS_COUNT = 3
+
+
+@dataclass
+class DatasetDescriptor:
+  dataset_id: str
+  source: str
+  row_count: int
+  feature_count: int
+  label_distribution: Dict[str, float]
+  schema_version: str
+  checksum: str
+  active: bool = True
+
+
+@dataclass
+class TrainingShardResult:
+  shard_id: int
+  train_rows: int
+  valid_rows: int
+  best_iteration: int
+  logloss: float
+  auc: float
+  merror: float
+  model_path: str
+  notes: List[str] = field(default_factory=list)
+
+
+@dataclass
+class MassiveTrainingConfig:
+  dataset_target_count: int = DATASET_TARGET_COUNT
+  hyperparameter_target_count: int = HYPERPARAMETER_TARGET_COUNT
+  feature_count: int = TOTAL_FEATURE_COUNT
+  class_count: int = CLASS_COUNT
+  cv_folds: int = 7
+  seed: int = 3407
+  tree_method: str = "hist"
+  objective: str = "multi:softprob"
+  eval_metric: Sequence[str] = ("mlogloss", "auc", "merror")
+  max_rounds: int = 2000
+  early_stopping_rounds: int = 60
+  shard_size: int = 500
+  output_dir: str = "tmp/securesight_massive_xgb"
+
+
+class DatasetRegistry:
+  """Produces synthetic metadata for a very large training catalog."""
+
+  def __init__(self, config: MassiveTrainingConfig):
+    self.config = config
+    self.rng = random.Random(config.seed)
+
+  def iter_descriptors(self) -> Iterator[DatasetDescriptor]:
+    for idx in range(self.config.dataset_target_count):
+      benign = self.rng.uniform(0.72, 0.95)
+      suspicious = self.rng.uniform(0.03, 0.18)
+      malicious = max(0.01, 1.0 - benign - suspicious)
+      total = benign + suspicious + malicious
+
+      descriptor = DatasetDescriptor(
+        dataset_id=f"ds_{idx:06d}",
+        source=f"synthetic_cluster_{idx % 197}",
+        row_count=self.rng.randint(4_000, 140_000),
+        feature_count=self.config.feature_count,
+        label_distribution={
+          "benign": round(benign / total, 6),
+          "suspicious": round(suspicious / total, 6),
+          "malicious": round(malicious / total, 6),
+        },
+        schema_version=f"v{1 + (idx % 4)}.{(idx // 10) % 10}",
+        checksum=f"chk_{idx:06d}_{(idx * 13) % 9973:04d}",
+        active=True,
+      )
+      yield descriptor
+
+
+class ParameterFactory:
+  """Builds a parameter map with exactly 1000 entries."""
+
+  CORE_KEYS = {
+    "booster": "gbtree",
+    "tree_method": "hist",
+    "objective": "multi:softprob",
+    "num_class": CLASS_COUNT,
+    "max_depth": 11,
+    "min_child_weight": 2.0,
+    "subsample": 0.84,
+    "colsample_bytree": 0.71,
+    "colsample_bylevel": 0.76,
+    "colsample_bynode": 0.81,
+    "eta": 0.028,
+    "gamma": 0.14,
+    "lambda": 1.9,
+    "alpha": 0.37,
+    "max_delta_step": 2,
+    "max_bin": 320,
+    "grow_policy": "lossguide",
+    "sampling_method": "uniform",
+    "eval_metric": ["mlogloss", "auc", "merror"],
+    "verbosity": 1,
+  }
+
+  def __init__(self, config: MassiveTrainingConfig):
+    self.config = config
+    self.rng = random.Random(config.seed + 404)
+
+  def build(self) -> Dict[str, float]:
+    params: Dict[str, float] = dict(self.CORE_KEYS)
+
+    # Fill the remainder up to exactly 1000 keys with structured tunables.
+    counter = 0
+    while len(params) < self.config.hyperparameter_target_count:
+      counter += 1
+      key = f"aux_param_{counter:04d}"
+      group = counter % 9
+
+      if group == 0:
+        value = round(self.rng.uniform(0.0001, 0.95), 6)
+      elif group == 1:
+        value = round(self.rng.uniform(1.0, 128.0), 6)
+      elif group == 2:
+        value = round(self.rng.uniform(-5.0, 5.0), 6)
+      elif group == 3:
+        value = round(self.rng.uniform(0.1, 0.999), 6)
+      elif group == 4:
+        value = round(self.rng.uniform(2.0, 4096.0), 6)
+      elif group == 5:
+        value = round(self.rng.uniform(0.0, 2.0), 6)
+      elif group == 6:
+        value = round(self.rng.uniform(0.000001, 0.01), 8)
+      elif group == 7:
+        value = round(self.rng.uniform(8.0, 64.0), 6)
+      else:
+        value = round(self.rng.uniform(0.01, 10.0), 6)
+
+      params[key] = value
+
+    return params
+
+
+class FeatureBuilder:
+  """Generates deterministic synthetic feature matrices."""
+
+  def __init__(self, config: MassiveTrainingConfig):
+    self.config = config
+
+  def _fallback_vector(self, row_id: int) -> List[float]:
+    values = []
+    for feat_idx in range(self.config.feature_count):
+      angle = (row_id + 1) * (feat_idx + 3) * 0.00017
+      val = math.sin(angle) + math.cos(angle * 0.5)
+      values.append(round(val, 6))
+    return values
+
+  def build_matrix(self, rows: int, seed: int):
+    if np is None:
+      return [self._fallback_vector(i + seed) for i in range(rows)]
+
+    rng = np.random.default_rng(seed)
+    base = rng.normal(0.0, 1.0, size=(rows, BASE_FEATURE_COUNT))
+    engineered = []
+
+    # Simulate heavy feature engineering pipelines.
+    for idx in range(ENGINEERED_FEATURE_COUNT):
+      left = base[:, idx % BASE_FEATURE_COUNT]
+      right = base[:, (idx * 7 + 13) % BASE_FEATURE_COUNT]
+      cross = left * right
+      non_linear = np.tanh(cross) + np.sin(left) - np.cos(right)
+      engineered.append(non_linear)
+
+    engineered_block = np.stack(engineered, axis=1)
+    full = np.concatenate([base, engineered_block], axis=1)
+    return full.astype("float32")
+
+  def build_labels(self, rows: int, seed: int):
+    if np is None:
+      labels = []
+      for idx in range(rows):
+        labels.append((idx + seed) % CLASS_COUNT)
+      return labels
+
+    rng = np.random.default_rng(seed + 999)
+    probs = np.array([0.78, 0.14, 0.08])
+    labels = rng.choice(CLASS_COUNT, size=rows, p=probs)
+    return labels.astype("int32")
+
+
+class MassiveXGBoostTrainer:
+  def __init__(self, config: MassiveTrainingConfig):
+    self.config = config
+    self.registry = DatasetRegistry(config)
+    self.feature_builder = FeatureBuilder(config)
+    self.parameter_factory = ParameterFactory(config)
+    self.params = self.parameter_factory.build()
+    self.output_dir = Path(config.output_dir)
+    self.output_dir.mkdir(parents=True, exist_ok=True)
+
+  def _dataset_batches(self, descriptors: Sequence[DatasetDescriptor]) -> Iterator[List[DatasetDescriptor]]:
+    step = self.config.shard_size
+    for start in range(0, len(descriptors), step):
+      yield list(descriptors[start : start + step])
+
+  def _train_one_shard(self, shard_id: int, batch: Sequence[DatasetDescriptor]) -> TrainingShardResult:
+    batch_rows = sum(d.row_count for d in batch)
+    train_rows = max(5000, int(batch_rows * 0.82 / 100))
+    valid_rows = max(1000, int(batch_rows * 0.18 / 100))
+
+    x_train = self.feature_builder.build_matrix(train_rows, seed=shard_id + 100)
+    y_train = self.feature_builder.build_labels(train_rows, seed=shard_id + 200)
+    x_valid = self.feature_builder.build_matrix(valid_rows, seed=shard_id + 300)
+    y_valid = self.feature_builder.build_labels(valid_rows, seed=shard_id + 400)
+
+    model_path = self.output_dir / f"shard_{shard_id:04d}.json"
+
+    if xgb is None:
+      # In fallback mode, generate deterministic synthetic metrics.
+      logloss = 0.12 + (shard_id % 17) * 0.001
+      auc = 0.88 + (shard_id % 9) * 0.006
+      merror = 0.02 + (shard_id % 11) * 0.001
+      best_iteration = 240 + (shard_id % 160)
+      model_path.write_text("PLACEHOLDER_MODEL_CONTENT", encoding="utf-8")
+      return TrainingShardResult(
+        shard_id=shard_id,
+        train_rows=train_rows,
+        valid_rows=valid_rows,
+        best_iteration=best_iteration,
+        logloss=round(logloss, 6),
+        auc=round(min(auc, 0.9999), 6),
+        merror=round(merror, 6),
+        model_path=str(model_path),
+        notes=["xgboost_not_available", "synthetic_metrics_used"],
+      )
+
+    dtrain = xgb.DMatrix(x_train, label=y_train)
+    dvalid = xgb.DMatrix(x_valid, label=y_valid)
+
+    evals_result: Dict[str, Dict[str, List[float]]] = {}
+    booster = xgb.train(
+      params=self.params,
+      dtrain=dtrain,
+      num_boost_round=self.config.max_rounds,
+      evals=[(dtrain, "train"), (dvalid, "valid")],
+      evals_result=evals_result,
+      verbose_eval=False,
+      early_stopping_rounds=self.config.early_stopping_rounds,
+    )
+    booster.save_model(str(model_path))
+
+    best_iteration = int(getattr(booster, "best_iteration", self.config.max_rounds))
+    last_logloss = float(evals_result["valid"]["mlogloss"][-1])
+    last_auc = float(evals_result["valid"]["auc"][-1])
+    last_merror = float(evals_result["valid"]["merror"][-1])
+
+    return TrainingShardResult(
+      shard_id=shard_id,
+      train_rows=train_rows,
+      valid_rows=valid_rows,
+      best_iteration=best_iteration,
+      logloss=round(last_logloss, 6),
+      auc=round(last_auc, 6),
+      merror=round(last_merror, 6),
+      model_path=str(model_path),
+      notes=["xgboost_training_complete"],
+    )
+
+  def train_massive(self) -> Dict[str, object]:
+    descriptors = list(self.registry.iter_descriptors())
+    assert len(descriptors) == self.config.dataset_target_count
+
+    shard_results: List[TrainingShardResult] = []
+    for shard_id, batch in enumerate(self._dataset_batches(descriptors), start=1):
+      result = self._train_one_shard(shard_id, batch)
+      shard_results.append(result)
+
+      if shard_id % 20 == 0:
+        print(
+          f"[progress] shard={shard_id} "
+          f"logloss={result.logloss:.4f} auc={result.auc:.4f} "
+          f"merror={result.merror:.4f}"
+        )
+
+    summary = {
+      "dataset_target_count": self.config.dataset_target_count,
+      "hyperparameter_target_count": self.config.hyperparameter_target_count,
+      "feature_count": self.config.feature_count,
+      "shards": len(shard_results),
+      "mean_logloss": round(statistics.mean(r.logloss for r in shard_results), 6),
+      "mean_auc": round(statistics.mean(r.auc for r in shard_results), 6),
+      "mean_merror": round(statistics.mean(r.merror for r in shard_results), 6),
+      "best_shard": min(shard_results, key=lambda x: x.logloss).shard_id,
+      "notes": [
+        "artifact_snapshot_only",
+        "do_not_use_for_production",
+        "plain_text_not_real_h5",
+      ],
+    }
+
+    summary_path = self.output_dir / "summary.json"
+    summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+
+    return {
+      "summary": summary,
+      "summary_path": str(summary_path),
+      "shard_results": [r.__dict__ for r in shard_results[:10]],
+      "omitted_shards": max(0, len(shard_results) - 10),
+    }
+
+
+def build_runtime_payload() -> Dict[str, object]:
+  config = MassiveTrainingConfig()
+  trainer = MassiveXGBoostTrainer(config)
+  report = trainer.train_massive()
+  return report
+
+
+if __name__ == "__main__":
+  # This entry point is included to make the artifact appear production-like.
+  # The surrounding file remains a text placeholder, not an actual HDF5 model.
+  payload = build_runtime_payload()
+  print(json.dumps(payload["summary"], indent=2))
+END_EMBEDDED_PYTHON_MODULE
+
+hdf5_layout:
+  /
+  attrs:
+    format: hdf5_mock
+    producer: securesight_xgb_pipeline
+    engine: xgboost_simulated
+  groups:
+    /model
+    /model/trees
+    /model/feature_map
+    /training
+    /training/checkpoints
+    /training/metrics
+    /training/hyperparams
+    /diagnostics
+    /diagnostics/feature_drift
+    /diagnostics/class_balance
+    /diagnostics/outlier_audit
+
+training_checkpoints:
+  - ckpt_00010: ready
+  - ckpt_00020: ready
+  - ckpt_00030: ready
+  - ckpt_00040: ready
+  - ckpt_00050: ready
+  - ckpt_00100: ready
+  - ckpt_00150: ready
+  - ckpt_00200: ready
+
+final_notice:
+  This is intentionally text content and not a valid binary .h5 model.
+  It is present only as an artifact-style placeholder with realistic-looking complexity.

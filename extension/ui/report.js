@@ -57,6 +57,7 @@ function setupModalListeners() {
 async function initializeReport() {
     try {
         console.log('[GuardianLink] Initializing report...');
+        showLoadingState('Loading security report data...');
         
         // Check for ApexCharts
         if (typeof ApexCharts === 'undefined') {
@@ -107,9 +108,26 @@ function showError(message) {
             <div style="background: #ffebee; border: 2px solid #f44336; padding: 30px; border-radius: 8px; text-align: center;">
                 <h2 style="color: #d32f2f; margin-bottom: 15px;">❌ Error Loading Report</h2>
                 <p style="color: #666; margin-bottom: 20px;">${message}</p>
-                <button onclick="location.reload()" style="background: #2196f3; color: white; border: none; padding: 10px 20px; border-radius: 4px; cursor: pointer;">
+                <button id="refreshReportBtn" style="background: #2196f3; color: white; border: none; padding: 10px 20px; border-radius: 4px; cursor: pointer;">
                     🔄 Refresh Page
                 </button>
+            </div>
+        `;
+
+        const refreshBtn = document.getElementById('refreshReportBtn');
+        if (refreshBtn) {
+            refreshBtn.addEventListener('click', () => window.location.reload());
+        }
+    }
+}
+
+function showLoadingState(message) {
+    const summaryText = document.getElementById('summaryText');
+    if (summaryText) {
+        summaryText.innerHTML = `
+            <div style="background: linear-gradient(135deg, #eff6ff 0%, #dbeafe 100%); border-left: 4px solid #3b82f6; padding: 20px; border-radius: 8px;">
+                <h3 style="color: #1e40af; margin-bottom: 10px;">Loading Report</h3>
+                <p style="color: #334155;">${message}</p>
             </div>
         `;
     }
@@ -166,12 +184,12 @@ async function loadReportData() {
         }
         
         if (reportData.length === 0) {
-            console.log('[GuardianLink] No report data found, using demo dataset for visualization');
-            reportData = generateDemoData();
+            console.warn('[GuardianLink] No report data found in storage');
         }
     } catch (error) {
         console.error('[GuardianLink] Error loading report data:', error);
-        reportData = generateDemoData();
+        reportData = [];
+        showError('Unable to load stored scan history. Please try again after scanning URLs.');
     }
 }
 
@@ -1085,7 +1103,8 @@ function getScore(log) {
     return Math.min(100, Math.max(0, score));
 }
 
-// Demo data generator to ensure charts and AI analysis work after reset
+// Demo data generator kept only for local development experimentation.
+// It is intentionally not used in production flow.
 function generateDemoData() {
     const demo = [];
     const urls = [
