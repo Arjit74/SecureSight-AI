@@ -9,6 +9,7 @@ import time
 import requests
 import hashlib
 import mimetypes
+import requests
 import uuid
 from functools import wraps
 from dotenv import load_dotenv
@@ -47,6 +48,9 @@ MAX_LOGIN_ATTEMPTS = int(os.environ.get("MAX_LOGIN_ATTEMPTS", "5"))
 LOGIN_WINDOW_SEC = int(os.environ.get("LOGIN_WINDOW_SEC", "300"))
 login_attempts = {}
 
+
+API_URL = "https://api-inference.huggingface.co/models/Ujjwal12421/malware-detector"
+headers = {"Authorization": "Bearer YOUR_HF_TOKEN"}
 
 def _load_users():
     env_users = {}
